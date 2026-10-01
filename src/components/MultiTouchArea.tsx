@@ -20,13 +20,13 @@ import React, {
   useContext,
   useRef,
   useMemo,
+  useEffect,
 } from 'react';
 import {
   View,
   ViewStyle,
   findNodeHandle,
   UIManager,
-  Platform,
   NativeTouchEvent,
 } from 'react-native';
 
@@ -71,6 +71,8 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
 
   // Maps a native touch identifier → the button ID it's currently pressing
   const activeTouchesRef = useRef<Map<string, string>>(new Map());
+  // A direction remains held until every finger pressing its region is lifted.
+  const buttonPressCountsRef = useRef<Map<string, number>>(new Map());
 
   // Whether we have fresh measurements (invalidated on layout change)
   const measuredRef = useRef(false);
@@ -162,7 +164,9 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
         const buttonId = hitTest(touch.pageX, touch.pageY);
         if (buttonId) {
           activeTouchesRef.current.set(touch.identifier, buttonId);
-          buttonsRef.current.get(buttonId)?.onPressIn();
+          const count = buttonPressCountsRef.current.get(buttonId) ?? 0;
+          buttonPressCountsRef.current.set(buttonId, count + 1);
+          if (count === 0) buttonsRef.current.get(buttonId)?.onPressIn();
         }
       }
     },
@@ -174,10 +178,26 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
       const buttonId = activeTouchesRef.current.get(touch.identifier);
       if (buttonId) {
         activeTouchesRef.current.delete(touch.identifier);
-        buttonsRef.current.get(buttonId)?.onPressOut();
+        const remaining = (buttonPressCountsRef.current.get(buttonId) ?? 1) - 1;
+        if (remaining <= 0) {
+          buttonPressCountsRef.current.delete(buttonId);
+          buttonsRef.current.get(buttonId)?.onPressOut();
+        } else {
+          buttonPressCountsRef.current.set(buttonId, remaining);
+        }
       }
     }
   }, []);
+
+  const releaseAllTouches = useCallback(() => {
+    for (const buttonId of buttonPressCountsRef.current.keys()) {
+      buttonsRef.current.get(buttonId)?.onPressOut();
+    }
+    activeTouchesRef.current.clear();
+    buttonPressCountsRef.current.clear();
+  }, []);
+
+  useEffect(() => releaseAllTouches, [releaseAllTouches]);
 
   // ── Raw touch event handlers ──────────────────────────────────
   // These fire for EVERY finger on Android and iOS, unlike the responder
@@ -227,8 +247,8 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
         onStartShouldSetResponder={() => true}
         onMoveShouldSetResponder={() => false}
         onResponderTerminationRequest={() => false}
+        onResponderTerminate={releaseAllTouches}
         // Raw touch events — these fire for ALL fingers
-        // @ts-ignore — onTouchStart/onTouchEnd are valid RN View props
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}

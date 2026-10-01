@@ -2,7 +2,7 @@
  * ConnectionToolbar — Top bar showing BT status and connect/disconnect button.
  */
 import React from 'react';
-import { View, Text, Pressable, StyleSheet, Animated } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import {
   COLORS,
   SPACING,
@@ -17,6 +17,8 @@ interface ConnectionToolbarProps {
   deviceName: string | null;
   onConnectPress: () => void;
   onDisconnectPress: () => void;
+  platformSupported?: boolean;
+  errorMessage?: string | null;
 }
 
 export function ConnectionToolbar({
@@ -24,6 +26,8 @@ export function ConnectionToolbar({
   deviceName,
   onConnectPress,
   onDisconnectPress,
+  platformSupported = true,
+  errorMessage,
 }: ConnectionToolbarProps) {
   const isConnected = status === 'connected';
   const isBusy = status === 'connecting' || status === 'scanning';
@@ -40,12 +44,15 @@ export function ConnectionToolbar({
       </View>
 
       {/* Center: Status */}
-      <StatusIndicator status={status} deviceName={deviceName} />
+      <View style={styles.statusSection}>
+        <StatusIndicator status={status} deviceName={deviceName} />
+        {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+      </View>
 
       {/* Right: Connect/Disconnect */}
       <Pressable
         onPress={isConnected ? onDisconnectPress : onConnectPress}
-        disabled={isBusy}
+        disabled={isBusy || !platformSupported}
         style={({ pressed }) => [
           styles.connectButton,
           isConnected && styles.connectButtonActive,
@@ -59,7 +66,9 @@ export function ConnectionToolbar({
             isConnected && styles.connectButtonTextActive,
           ]}
         >
-          {isBusy
+          {!platformSupported
+            ? 'ANDROID REQUIRED'
+            : isBusy
             ? status === 'scanning'
               ? '⟳ SCANNING'
               : '⟳ CONNECTING'
@@ -102,6 +111,17 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     fontSize: 8,
     letterSpacing: 1.5,
+  },
+  statusSection: {
+    alignItems: 'center',
+    maxWidth: 240,
+  },
+  errorText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.danger,
+    fontSize: 9,
+    marginTop: 2,
+    textAlign: 'center',
   },
   connectButton: {
     paddingHorizontal: SPACING.md,

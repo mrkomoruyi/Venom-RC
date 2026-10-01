@@ -28,6 +28,7 @@ interface DeviceListModalProps {
   onSelectDevice: (device: BTDevice) => void;
   onScan: () => void;
   onClose: () => void;
+  onForgetLastDevice: () => void;
 }
 
 export function DeviceListModal({
@@ -37,6 +38,7 @@ export function DeviceListModal({
   onSelectDevice,
   onScan,
   onClose,
+  onForgetLastDevice,
 }: DeviceListModalProps) {
   const isScanning = status === 'scanning';
 
@@ -87,6 +89,15 @@ export function DeviceListModal({
             <Text style={styles.scanButtonText}>
               {isScanning ? 'SCANNING...' : '⟳ SCAN FOR DEVICES'}
             </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={onForgetLastDevice}
+            style={styles.forgetButton}
+            accessibilityRole="button"
+            accessibilityLabel="Forget saved RC car"
+          >
+            <Text style={styles.forgetText}>FORGET SAVED CAR</Text>
           </Pressable>
 
           {/* Device list */}
@@ -175,6 +186,17 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.label,
     color: COLORS.accentPrimary,
     fontSize: 11,
+  },
+  forgetButton: {
+    alignSelf: 'center',
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.md,
+  },
+  forgetText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.textMuted,
+    fontSize: 10,
+    textDecorationLine: 'underline',
   },
   list: {
     maxHeight: 250,

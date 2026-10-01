@@ -15,12 +15,19 @@ export type BTDevice = {
   id: string;
 };
 
+/** Bluetooth Classic / RFCOMM is implemented only for Android in this app. */
+export const isBluetoothClassicSupported = () => Platform.OS === 'android';
+
+// Native writes are asynchronous. Keep them ordered so a late movement packet
+// cannot overtake a STOP packet when the user releases a control quickly.
+const writeQueues = new Map<string, Promise<void>>();
+
 /**
  * Request the Android runtime permissions required for Bluetooth Classic.
  * Android 12+ requires BLUETOOTH_CONNECT and BLUETOOTH_SCAN.
  */
 export async function requestBluetoothPermissions(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true;
+  if (!isBluetoothClassicSupported()) return false;
 
   try {
     const apiLevel = Platform.Version;
@@ -30,7 +37,6 @@ export async function requestBluetoothPermissions(): Promise<boolean> {
       const granted = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       ]);
 
       return (
@@ -56,6 +62,7 @@ export async function requestBluetoothPermissions(): Promise<boolean> {
  * Check if Bluetooth is enabled on the device.
  */
 export async function isBluetoothEnabled(): Promise<boolean> {
+  if (!isBluetoothClassicSupported()) return false;
   try {
     return await RNBluetoothClassic.isBluetoothEnabled();
   } catch (error) {
@@ -69,6 +76,7 @@ export async function isBluetoothEnabled(): Promise<boolean> {
  * Returns true if the user accepted and Bluetooth is now enabled.
  */
 export async function requestEnableBluetooth(): Promise<boolean> {
+  if (!isBluetoothClassicSupported()) return false;
   try {
     return await RNBluetoothClassic.requestBluetoothEnabled();
   } catch (error) {
@@ -81,6 +89,7 @@ export async function requestEnableBluetooth(): Promise<boolean> {
  * Get list of paired/bonded Bluetooth devices.
  */
 export async function getBondedDevices(): Promise<BTDevice[]> {
+  if (!isBluetoothClassicSupported()) return [];
   try {
     const devices: BluetoothDevice[] =
       await RNBluetoothClassic.getBondedDevices();
@@ -113,6 +122,10 @@ export function startDiscoveryStream(
   onDeviceFound: (device: BTDevice) => void,
   onFinished?: () => void,
 ): () => void {
+  if (!isBluetoothClassicSupported()) {
+    onFinished?.();
+    return () => undefined;
+  }
   // Deduplicate at the source — the event fires multiple times per device
   const seenAddresses = new Set<string>();
 
@@ -170,9 +183,10 @@ export function startDiscoveryStream(
  * Cancel ongoing Bluetooth discovery.
  */
 export async function cancelDiscovery(): Promise<void> {
+  if (!isBluetoothClassicSupported()) return;
   try {
     await RNBluetoothClassic.cancelDiscovery();
-  } catch (error) {
+  } catch {
     // Ignore — discovery may not be running
   }
 }
@@ -185,6 +199,7 @@ export async function cancelDiscovery(): Promise<void> {
 export async function connectToDevice(
   address: string
 ): Promise<BluetoothDevice | null> {
+  if (!isBluetoothClassicSupported()) return null;
   // Always stop discovery and allow radio to settle before connecting
   try {
     await RNBluetoothClassic.cancelDiscovery();
@@ -231,6 +246,7 @@ export async function connectToDevice(
 export async function disconnectFromDevice(
   address: string
 ): Promise<boolean> {
+  if (!isBluetoothClassicSupported()) return true;
   try {
     const device = await RNBluetoothClassic.getConnectedDevice(address);
     if (device) {
@@ -247,9 +263,10 @@ export async function disconnectFromDevice(
  * Check if a specific device is currently connected.
  */
 export async function isDeviceConnected(address: string): Promise<boolean> {
+  if (!isBluetoothClassicSupported()) return false;
   try {
     return await RNBluetoothClassic.isDeviceConnected(address);
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -261,14 +278,26 @@ export async function sendCommand(
   address: string,
   command: string
 ): Promise<boolean> {
+  if (!isBluetoothClassicSupported()) return false;
+
+  let sent = false;
+  const previous = writeQueues.get(address) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        const device = await RNBluetoothClassic.getConnectedDevice(address);
+        sent = device ? await device.write(command) : false;
+      } catch {
+        sent = false;
+      }
+    });
+
+  writeQueues.set(address, next);
   try {
-    const device = await RNBluetoothClassic.getConnectedDevice(address);
-    if (device) {
-      return await device.write(command);
-    }
-    return false;
-  } catch (error) {
-    // Silently fail — connection may have dropped
-    return false;
+    await next;
+    return sent;
+  } finally {
+    if (writeQueues.get(address) === next) writeQueues.delete(address);
   }
 }

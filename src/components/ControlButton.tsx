@@ -162,6 +162,15 @@ export function ControlButton({
       <View
         ref={buttonRef}
         collapsable={false}
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={label ?? icon}
+        accessibilityHint={onPressIn ? 'Press and hold to control the car' : 'Double tap to activate'}
+        accessibilityState={{ selected: isActive, disabled: false }}
+        onAccessibilityTap={() => {
+          handlePressIn();
+          handlePressOut();
+        }}
         style={[
           styles.button,
           {

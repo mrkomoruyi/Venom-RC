@@ -35,8 +35,12 @@ function withBluetoothClassic(config) {
         (p) => p.$?.['android:name'] === perm
       );
       if (!exists) {
+        // Location is only needed by Android 11 and below for discovery.
+        // Keeping it capped avoids a needless location permission on Android 12+.
+        const attributes = { 'android:name': perm };
+        if (perm.includes('ACCESS_')) attributes['android:maxSdkVersion'] = '30';
         manifest.manifest['uses-permission'].push({
-          $: { 'android:name': perm },
+          $: attributes,
         });
       }
     }

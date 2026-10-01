@@ -23,6 +23,7 @@ from datetime import datetime
 
 # Setup debug file logger
 LOG_FILE = "/tmp/esp32_simulator.log"
+MOTION_WATCHDOG_SECONDS = 0.75
 logging.basicConfig(
     filename=LOG_FILE,
     filemode="w",
@@ -105,6 +106,17 @@ class CarState:
         self.history = []
         self.adapter_name = "ESP32_CAR"
         self.adapter_addr = "00:00:00:00:00:00"
+        self.last_motion_command_at = 0.0
+
+    def stop_motors(self, reason=None):
+        self.direction = "STOP"
+        self.direction_label = "■ Stopped"
+        self.left_motor = 0
+        self.right_motor = 0
+        if reason:
+            now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self.history.append((now, "S", reason))
+            logger.warning(reason)
 
     def handle_command(self, char):
         now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -125,6 +137,7 @@ class CarState:
                 self.direction_label = label
                 if motors:
                     self.left_motor, self.right_motor = motors
+                    self.last_motion_command_at = time.monotonic()
                 self.history.append((now, char, f"{name} ({label})"))
         elif char in ('\r', '\n', ' '):
             # Ignore whitespace / delimiter characters
@@ -135,6 +148,13 @@ class CarState:
         # Keep history to last 8 lines
         if len(self.history) > 8:
             self.history = self.history[-8:]
+
+    def enforce_motion_watchdog(self):
+        if (
+            self.direction != "STOP"
+            and time.monotonic() - self.last_motion_command_at > MOTION_WATCHDOG_SECONDS
+        ):
+            self.stop_motors("WATCHDOG: movement lease expired")
 
 
 class AutoPairingAgent(dbus.service.Object):
@@ -437,6 +457,7 @@ def main():
 
     # Periodic timer to refresh dashboard (e.g. for horn timeout)
     def periodic_tick():
+        state.enforce_motion_watchdog()
         render_dashboard(state)
         return True
 

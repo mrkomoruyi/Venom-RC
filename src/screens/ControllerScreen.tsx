@@ -16,71 +16,29 @@
  * by tracking active directions and sending combined commands.
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, StatusBar, Alert } from 'react-native';
+import { View, StyleSheet, StatusBar, Alert, AppState } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { COLORS, SPACING } from '../constants/theme';
-import { COMMANDS } from '../constants/commands';
+import { COMMANDS, Command } from '../constants/commands';
+import { resolveDirectionCommand } from '../utils/controlProtocol';
 import { useBluetoothDevice } from '../hooks/useBluetoothDevice';
-import { useMockBluetoothDevice } from '../hooks/useMockBluetoothDevice';
 import { ConnectionToolbar } from '../components/ConnectionToolbar';
 import { DirectionalPad } from '../components/DirectionalPad';
 import { SteeringPad } from '../components/SteeringPad';
 import { ToolbarButtons } from '../components/ToolbarButtons';
 import { DeviceListModal } from '../components/DeviceListModal';
 import { MultiTouchArea } from '../components/MultiTouchArea';
-import { DebugConsole } from '../components/DebugConsole';
-
-/**
- * ─── MOCK MODE ────────────────────────────────────────────────
- * Set to true to use a fake Bluetooth backend with an on-screen
- * debug console. Useful for testing UI + multi-touch without
- * an ESP32 or any Bluetooth device.
- *
- * Set to false for production / real-device usage.
- */
-const MOCK_BLUETOOTH = false;
-
-/**
- * Resolves which command to send based on currently active directions.
- */
-function resolveDirectionCommand(activeDirections: Set<string>): string {
-  const fwd = activeDirections.has('forward');
-  const bwd = activeDirections.has('backward');
-  const left = activeDirections.has('left');
-  const right = activeDirections.has('right');
-
-  // Combined directions
-  if (fwd && left) return COMMANDS.FORWARD_LEFT;
-  if (fwd && right) return COMMANDS.FORWARD_RIGHT;
-  if (bwd && left) return COMMANDS.BACKWARD_LEFT;
-  if (bwd && right) return COMMANDS.BACKWARD_RIGHT;
-
-  // Single directions
-  if (fwd) return COMMANDS.FORWARD;
-  if (bwd) return COMMANDS.BACKWARD;
-  if (left) return COMMANDS.LEFT;
-  if (right) return COMMANDS.RIGHT;
-
-  // Nothing held
-  return COMMANDS.STOP;
-}
 
 export function ControllerScreen() {
   const [lightsOn, setLightsOn] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
-  const [debugLogs, setDebugLogs] = useState<string[]>([]);
-
-  const handleCommandLog = useCallback((entry: string) => {
-    setDebugLogs((prev) => [...prev.slice(-50), entry]);
-  }, []);
-
-  // Use mock hook in dev mode, real hook in production
-  const realBt = useBluetoothDevice();
-  const mockBt = useMockBluetoothDevice(handleCommandLog);
-  const bt = MOCK_BLUETOOTH ? mockBt : realBt;
+  const bt = useBluetoothDevice();
 
   // Track which directional buttons are currently held down
   const activeDirectionsRef = useRef<Set<string>>(new Set());
+  const activeCommandRef = useRef<Command>(COMMANDS.STOP);
+  const sendRef = useRef(bt.send);
+  sendRef.current = bt.send;
 
   /**
    * Send the appropriate command based on the current combination
@@ -88,8 +46,37 @@ export function ControllerScreen() {
    */
   const sendDirectionUpdate = useCallback(() => {
     const command = resolveDirectionCommand(activeDirectionsRef.current);
-    bt.send(command);
-  }, [bt]);
+    activeCommandRef.current = command;
+    void sendRef.current(command);
+  }, []);
+
+  // Keep a live control lease while moving. The ESP32 should independently
+  // stop on a missed lease; this also makes commands resilient to one lost
+  // RFCOMM packet.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (activeCommandRef.current !== COMMANDS.STOP) {
+        void sendRef.current(activeCommandRef.current);
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, []);
+
+  // A backgrounded or unmounted controller must relinquish motion immediately.
+  useEffect(() => {
+    const stop = () => {
+      activeDirectionsRef.current.clear();
+      activeCommandRef.current = COMMANDS.STOP;
+      void sendRef.current(COMMANDS.STOP);
+    };
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') stop();
+    });
+    return () => {
+      subscription.remove();
+      stop();
+    };
+  }, []);
 
   // Lock to landscape on mount
   useEffect(() => {
@@ -144,8 +131,8 @@ export function ControllerScreen() {
 
   // ── Honk handler (momentary) ─────────────────────────────────
   const handleHonkPress = useCallback(() => {
-    bt.send(COMMANDS.HONK);
-  }, [bt]);
+    void bt.send(COMMANDS.HONK);
+  }, [bt.send]);
 
   const handleHonkRelease = useCallback(() => {
     // Re-send current direction state after honk ends
@@ -153,11 +140,11 @@ export function ControllerScreen() {
   }, [sendDirectionUpdate]);
 
   // ── Lights handler (toggle) ──────────────────────────────────
-  const handleLightsToggle = useCallback(() => {
+  const handleLightsToggle = useCallback(async () => {
     const newState = !lightsOn;
-    setLightsOn(newState);
-    bt.send(newState ? COMMANDS.LIGHTS_ON : COMMANDS.LIGHTS_OFF);
-  }, [lightsOn, bt]);
+    const sent = await bt.send(newState ? COMMANDS.LIGHTS_ON : COMMANDS.LIGHTS_OFF);
+    if (sent) setLightsOn(newState);
+  }, [lightsOn, bt.send]);
 
   // ── Bluetooth connection handlers ────────────────────────────
   const handleConnectPress = useCallback(() => {
@@ -171,10 +158,15 @@ export function ControllerScreen() {
       {
         text: 'Disconnect',
         style: 'destructive',
-        onPress: () => bt.disconnect(),
+        onPress: async () => {
+          activeDirectionsRef.current.clear();
+          activeCommandRef.current = COMMANDS.STOP;
+          await bt.send(COMMANDS.STOP);
+          await bt.disconnect();
+        },
       },
     ]);
-  }, [bt]);
+  }, [bt.disconnect, bt.send]);
 
   const handleSelectDevice = useCallback(
     async (device: { address: string; name: string; id: string }) => {
@@ -208,6 +200,8 @@ export function ControllerScreen() {
         deviceName={bt.connectedDevice?.name ?? null}
         onConnectPress={handleConnectPress}
         onDisconnectPress={handleDisconnectPress}
+        platformSupported={bt.platformSupported}
+        errorMessage={bt.errorMessage}
       />
 
       {/* Main Control Area — MultiTouchArea handles all touches */}
@@ -249,8 +243,6 @@ export function ControllerScreen() {
           {/* Ambient glow in center */}
           <View style={styles.ambientGlow} />
 
-          {/* Debug console overlay (mock mode only) */}
-          {MOCK_BLUETOOTH && <DebugConsole logs={debugLogs} />}
         </View>
 
         {/* Right: Utility buttons + Steering */}
@@ -286,6 +278,9 @@ export function ControllerScreen() {
         onClose={() => {
           setShowDeviceModal(false);
           bt.stopScan();
+        }}
+        onForgetLastDevice={() => {
+          void bt.forgetLastDevice();
         }}
       />
     </View>
