@@ -168,6 +168,10 @@ export function ControllerScreen() {
     ]);
   }, [bt.disconnect, bt.send]);
 
+  const handleReconnectPress = useCallback(() => {
+    bt.reconnect();
+  }, [bt.reconnect]);
+
   const handleSelectDevice = useCallback(
     async (device: { address: string; name: string; id: string }) => {
       setShowDeviceModal(false);
@@ -183,12 +187,7 @@ export function ControllerScreen() {
     [bt]
   );
 
-  // Show error alerts
-  useEffect(() => {
-    if (bt.errorMessage && bt.status === 'error') {
-      Alert.alert('Bluetooth Error', bt.errorMessage);
-    }
-  }, [bt.errorMessage, bt.status]);
+
 
   return (
     <View style={styles.container}>
@@ -200,6 +199,8 @@ export function ControllerScreen() {
         deviceName={bt.connectedDevice?.name ?? null}
         onConnectPress={handleConnectPress}
         onDisconnectPress={handleDisconnectPress}
+        onReconnectPress={handleReconnectPress}
+        savedDeviceName={bt.savedDeviceName}
         platformSupported={bt.platformSupported}
         errorMessage={bt.errorMessage}
       />

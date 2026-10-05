@@ -17,6 +17,8 @@ interface ConnectionToolbarProps {
   deviceName: string | null;
   onConnectPress: () => void;
   onDisconnectPress: () => void;
+  onReconnectPress?: () => void;
+  savedDeviceName?: string | null;
   platformSupported?: boolean;
   errorMessage?: string | null;
 }
@@ -26,11 +28,15 @@ export function ConnectionToolbar({
   deviceName,
   onConnectPress,
   onDisconnectPress,
+  onReconnectPress,
+  savedDeviceName,
   platformSupported = true,
   errorMessage,
 }: ConnectionToolbarProps) {
   const isConnected = status === 'connected';
   const isBusy = status === 'connecting' || status === 'scanning';
+  const showReconnect =
+    !isConnected && !isBusy && !!savedDeviceName && platformSupported && !!onReconnectPress;
 
   return (
     <View style={styles.toolbar}>
@@ -49,34 +55,50 @@ export function ConnectionToolbar({
         {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
       </View>
 
-      {/* Right: Connect/Disconnect */}
-      <Pressable
-        onPress={isConnected ? onDisconnectPress : onConnectPress}
-        disabled={isBusy || !platformSupported}
-        style={({ pressed }) => [
-          styles.connectButton,
-          isConnected && styles.connectButtonActive,
-          isBusy && styles.connectButtonBusy,
-          pressed && styles.connectButtonPressed,
-        ]}
-      >
-        <Text
-          style={[
-            styles.connectButtonText,
-            isConnected && styles.connectButtonTextActive,
+      {/* Right: Actions */}
+      <View style={styles.actionSection}>
+        {showReconnect && (
+          <Pressable
+            onPress={onReconnectPress}
+            style={({ pressed }) => [
+              styles.connectButton,
+              styles.reconnectButton,
+              pressed && styles.connectButtonPressed,
+            ]}
+          >
+            <Text style={styles.reconnectText}>↻ RECONNECT</Text>
+          </Pressable>
+        )}
+        <Pressable
+          onPress={isConnected ? onDisconnectPress : onConnectPress}
+          disabled={isBusy || !platformSupported}
+          style={({ pressed }) => [
+            styles.connectButton,
+            isConnected && styles.connectButtonActive,
+            isBusy && styles.connectButtonBusy,
+            pressed && styles.connectButtonPressed,
           ]}
         >
-          {!platformSupported
-            ? 'ANDROID REQUIRED'
-            : isBusy
-            ? status === 'scanning'
-              ? '⟳ SCANNING'
-              : '⟳ CONNECTING'
-            : isConnected
-            ? '⏻ DISCONNECT'
-            : '⏻ CONNECT'}
-        </Text>
-      </Pressable>
+          <Text
+            style={[
+              styles.connectButtonText,
+              isConnected && styles.connectButtonTextActive,
+            ]}
+          >
+            {!platformSupported
+              ? 'ANDROID REQUIRED'
+              : isBusy
+              ? status === 'scanning'
+                ? '⟳ SCANNING'
+                : '⟳ CONNECTING'
+              : isConnected
+              ? '⏻ DISCONNECT'
+              : showReconnect
+              ? '⏻ SCAN'
+              : '⏻ CONNECT'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -130,6 +152,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.accentDim,
     backgroundColor: COLORS.backgroundElevated,
+  },
+  reconnectButton: {
+    borderColor: COLORS.success,
+    backgroundColor: `${COLORS.success}12`,
+  },
+  reconnectText: {
+    ...TYPOGRAPHY.label,
+    color: COLORS.success,
+    fontSize: 11,
+  },
+  actionSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
   },
   connectButtonActive: {
     borderColor: COLORS.danger,

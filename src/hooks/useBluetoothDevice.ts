@@ -28,6 +28,7 @@ import {
   getLastDevice,
   clearLastDevice,
 } from '../services/StorageService';
+import type { BluetoothErrorCode } from '../services/BluetoothErrors';
 
 export type ConnectionStatus =
   | 'disconnected'
@@ -36,19 +37,23 @@ export type ConnectionStatus =
   | 'scanning'
   | 'error';
 
-interface UseBluetoothDeviceReturn {
+export interface UseBluetoothDeviceReturn {
   /** Current connection status */
   status: ConnectionStatus;
   /** Currently connected device info */
   connectedDevice: BTDevice | null;
   /** List of discovered/bonded devices */
   discoveredDevices: BTDevice[];
-  /** Error message if any */
+  /** Human-readable error message, if any */
   errorMessage: string | null;
+  /** Machine-readable error code corresponding to errorMessage */
+  errorCode: BluetoothErrorCode | null;
   /** Whether Bluetooth is enabled on the phone */
   bluetoothEnabled: boolean;
   /** Whether this build can use Bluetooth Classic on this platform */
   platformSupported: boolean;
+  /** Name of the last-connected device persisted for reconnect, or null */
+  savedDeviceName: string | null;
 
   /** Connect to a specific device by address */
   connect: (device: BTDevice) => Promise<boolean>;
@@ -60,8 +65,8 @@ interface UseBluetoothDeviceReturn {
   stopScan: () => Promise<void>;
   /** Send a single character command */
   send: (command: string) => Promise<boolean>;
-  /** Auto-reconnect to last-used device */
-  autoReconnect: () => Promise<boolean>;
+  /** Reconnect to the last-used device (user-triggered) */
+  reconnect: () => Promise<boolean>;
   /** Request permissions */
   requestPermissions: () => Promise<boolean>;
   /** Forget the saved car so it will not be auto-reconnected. */
@@ -75,13 +80,26 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
   );
   const [discoveredDevices, setDiscoveredDevices] = useState<BTDevice[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<BluetoothErrorCode | null>(null);
   const [bluetoothEnabled, setBluetoothEnabled] = useState(false);
+  const [savedDeviceName, setSavedDeviceName] = useState<string | null>(null);
   const connectedAddressRef = useRef<string | null>(null);
   const connectionCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const discoveryCleanupRef = useRef<(() => void) | null>(null);
   const connectingRef = useRef(false);
+  const scanningRef = useRef(false);
   const mountedRef = useRef(true);
   const platformSupported = isBluetoothClassicSupported();
+
+  const setError = useCallback((message: string, code: BluetoothErrorCode) => {
+    setErrorMessage(message);
+    setErrorCode(code);
+  }, []);
+
+  const clearError = useCallback(() => {
+    setErrorMessage(null);
+    setErrorCode(null);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -128,22 +146,22 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
 
   const requestPermissions = useCallback(async (): Promise<boolean> => {
     if (!platformSupported) {
-      setErrorMessage('Bluetooth Classic control is available on Android only.');
+      setError('Bluetooth Classic control is available on Android only.', 'UNSUPPORTED_PLATFORM');
       return false;
     }
     const granted = await requestBluetoothPermissions();
     if (!granted) {
-      setErrorMessage('Bluetooth permissions are required');
+      setError('Bluetooth permissions are required', 'PERMISSION_DENIED');
     }
     return granted;
-  }, [platformSupported]);
+  }, [platformSupported, setError]);
 
   const connect = useCallback(
     async (device: BTDevice, silent = false): Promise<boolean> => {
       if (!platformSupported || connectingRef.current) return false;
       connectingRef.current = true;
       setStatus('connecting');
-      setErrorMessage(null);
+      clearError();
 
       try {
         const result = await connectToDevice(device.address);
@@ -151,6 +169,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
           setStatus('connected');
           setConnectedDevice(device);
           connectedAddressRef.current = device.address;
+          setSavedDeviceName(device.name);
           await saveLastDevice({
             address: device.address,
             name: device.name,
@@ -158,18 +177,18 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
           return true;
         } else {
           setStatus('error');
-          if (!silent) setErrorMessage(`Failed to connect to ${device.name}`);
+          if (!silent) setError(`Failed to connect to ${device.name}`, 'CONNECTION_FAILED');
           return false;
         }
       } catch {
         setStatus('error');
-        if (!silent) setErrorMessage('Connection failed');
+        if (!silent) setError('Connection failed', 'CONNECTION_FAILED');
         return false;
       } finally {
         connectingRef.current = false;
       }
     },
-    [platformSupported]
+    [platformSupported, setError, clearError]
   );
 
   const disconnect = useCallback(async () => {
@@ -184,29 +203,30 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
   const scan = useCallback(async () => {
     if (!platformSupported) {
       setStatus('error');
-      setErrorMessage('Bluetooth Classic control is available on Android only.');
+      setError('Bluetooth Classic control is available on Android only.', 'UNSUPPORTED_PLATFORM');
       return;
     }
-    if (connectingRef.current || status === 'scanning') return;
+    if (connectingRef.current || scanningRef.current) return;
     // If Bluetooth is off, prompt the user to enable it
     if (!bluetoothEnabled) {
       const enabled = await requestEnableBluetooth();
       if (!enabled) {
-        setErrorMessage('Bluetooth must be enabled to scan for devices');
+        setError('Bluetooth must be enabled to scan for devices', 'RADIO_OFF');
         return;
       }
       // User accepted — update our state
       setBluetoothEnabled(true);
     }
 
+    scanningRef.current = true;
     setStatus('scanning');
-    setErrorMessage(null);
+    clearError();
     setDiscoveredDevices([]);
 
     try {
       // First get bonded/paired devices
       const bonded = await getBondedDevices();
-      console.log('[BT Scan] Bonded devices:', JSON.stringify(bonded.map(d => d.address)));
+      if (__DEV__) console.log('[BT Scan] Bonded devices:', JSON.stringify(bonded.map(d => d.address)));
       setDiscoveredDevices(bonded);
 
       // Clean up any previous discovery listener
@@ -230,6 +250,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
         },
         () => {
           // Discovery finished (~12s)
+          scanningRef.current = false;
           if (mountedRef.current) {
             setStatus((s) => (s === 'scanning' ? 'disconnected' : s));
           }
@@ -239,13 +260,15 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
 
       discoveryCleanupRef.current = cleanup;
     } catch (error) {
-      console.error('[BT Scan] Error:', error);
+      scanningRef.current = false;
+      if (__DEV__) console.error('[BT Scan] Error:', error);
       setStatus('error');
-      setErrorMessage('Scan failed');
+      setError('Scan failed', 'DISCOVERY_FAILED');
     }
-  }, [bluetoothEnabled, platformSupported, status]);
+  }, [bluetoothEnabled, platformSupported, setError, clearError]);
 
   const stopScan = useCallback(async () => {
+    scanningRef.current = false;
     discoveryCleanupRef.current?.();
     discoveryCleanupRef.current = null;
     await cancelDiscovery();
@@ -259,7 +282,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
       setStatus('disconnected');
       setConnectedDevice(null);
       connectedAddressRef.current = null;
-      setErrorMessage('Connection to the RC car was lost.');
+      setError('Connection to the RC car was lost.', 'CONNECTION_LOST');
     }
     return sent;
   }, []);
@@ -289,21 +312,26 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
     return result;
   }, [connect]);
 
+  const reconnect = useCallback(async (): Promise<boolean> => {
+    return autoReconnect();
+  }, [autoReconnect]);
+
   const forgetLastDevice = useCallback(async () => {
     await clearLastDevice();
+    setSavedDeviceName(null);
   }, []);
 
-  // Auto-reconnect on mount
+  // Initialise on mount: request permissions and load saved device name.
+  // Auto-reconnect is NOT performed — the user can tap "Reconnect" instead.
   useEffect(() => {
     const init = async () => {
       const permsOk = await requestPermissions();
       if (permsOk) {
         const btOn = await isBluetoothEnabled();
         setBluetoothEnabled(btOn);
-        if (btOn) {
-          await autoReconnect();
-        }
       }
+      const saved = await getLastDevice();
+      if (mountedRef.current) setSavedDeviceName(saved?.name ?? null);
     };
     init();
   }, []);
@@ -313,14 +341,16 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
     connectedDevice,
     discoveredDevices,
     errorMessage,
+    errorCode,
     bluetoothEnabled,
     platformSupported,
+    savedDeviceName,
     connect,
     disconnect,
     scan,
     stopScan,
     send,
-    autoReconnect,
+    reconnect,
     requestPermissions,
     forgetLastDevice,
   };

@@ -1,15 +1,16 @@
 /**
  * Mock Bluetooth hook for testing without a real device.
  *
- * Provides the same API as useBluetoothDevice but:
+ * Provides the same API surface as useBluetoothDevice but:
  * - Simulates scan with fake devices
  * - Simulates connect/disconnect
  * - Logs every command to a visible debug console via callback
  *
- * Enable by setting __DEV_MOCK_BT__ = true in ControllerScreen.
+ * To activate, swap the import in ControllerScreen:
+ *   import { useMockBluetoothDevice as useBluetoothDevice } from '../hooks/useMockBluetoothDevice';
  */
 import { useState, useCallback, useRef } from 'react';
-import type { ConnectionStatus } from './useBluetoothDevice';
+import type { ConnectionStatus, UseBluetoothDeviceReturn } from './useBluetoothDevice';
 
 // Reverse map: command character → human-readable label
 const COMMAND_LABELS: Record<string, string> = {
@@ -40,7 +41,7 @@ const FAKE_DEVICES: BTDevice[] = [
 
 export function useMockBluetoothDevice(
   onCommandLog?: (entry: string) => void,
-) {
+): UseBluetoothDeviceReturn {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [connectedDevice, setConnectedDevice] = useState<BTDevice | null>(null);
   const [discoveredDevices, setDiscoveredDevices] = useState<BTDevice[]>([]);
@@ -87,21 +88,26 @@ export function useMockBluetoothDevice(
     return true;
   }, [onCommandLog]);
 
-  const autoReconnect = useCallback(async (): Promise<boolean> => false, []);
+  const reconnect = useCallback(async (): Promise<boolean> => false, []);
   const requestPermissions = useCallback(async (): Promise<boolean> => true, []);
+  const forgetLastDevice = useCallback(async () => {}, []);
 
   return {
     status,
     connectedDevice,
     discoveredDevices,
     errorMessage,
+    errorCode: null,
     bluetoothEnabled: true,
+    platformSupported: true,
+    savedDeviceName: null,
     connect,
     disconnect,
     scan,
     stopScan,
     send,
-    autoReconnect,
+    reconnect,
     requestPermissions,
+    forgetLastDevice,
   };
 }

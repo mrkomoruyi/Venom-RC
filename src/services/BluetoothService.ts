@@ -53,7 +53,7 @@ export async function requestBluetoothPermissions(): Promise<boolean> {
       return granted === PermissionsAndroid.RESULTS.GRANTED;
     }
   } catch (error) {
-    console.error('Permission request failed:', error);
+    if (__DEV__) console.error('Permission request failed:', error);
     return false;
   }
 }
@@ -66,7 +66,7 @@ export async function isBluetoothEnabled(): Promise<boolean> {
   try {
     return await RNBluetoothClassic.isBluetoothEnabled();
   } catch (error) {
-    console.error('Failed to check Bluetooth status:', error);
+    if (__DEV__) console.error('Failed to check Bluetooth status:', error);
     return false;
   }
 }
@@ -80,7 +80,7 @@ export async function requestEnableBluetooth(): Promise<boolean> {
   try {
     return await RNBluetoothClassic.requestBluetoothEnabled();
   } catch (error) {
-    console.error('Failed to request Bluetooth enable:', error);
+    if (__DEV__) console.error('Failed to request Bluetooth enable:', error);
     return false;
   }
 }
@@ -99,7 +99,7 @@ export async function getBondedDevices(): Promise<BTDevice[]> {
       id: d.address,
     }));
   } catch (error) {
-    console.error('Failed to get bonded devices:', error);
+    if (__DEV__) console.error('Failed to get bonded devices:', error);
     return [];
   }
 }
@@ -130,9 +130,10 @@ export function startDiscoveryStream(
   const seenAddresses = new Set<string>();
 
   // Subscribe to live device-found events
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const subscription = RNBluetoothClassic.onDeviceDiscovered((event: any) => {
     // The event structure may vary — log it once for debugging
-    console.log('[BT Discovery] Device event:', JSON.stringify(event));
+    if (__DEV__) console.log('[BT Discovery] Device event:', JSON.stringify(event));
 
     // event.device is a BluetoothNativeDevice on Android
     const d = event?.device ?? event;
@@ -150,6 +151,7 @@ export function startDiscoveryStream(
 
   // Kick off discovery (the promise resolves when the scan finishes)
   RNBluetoothClassic.startDiscovery()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .then((devices: any[]) => {
       // Some Android versions return discovered devices via the promise too.
       // Add any we haven't seen from the event listener.
@@ -168,8 +170,9 @@ export function startDiscoveryStream(
       }
       onFinished?.();
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .catch((error: any) => {
-      console.error('Discovery failed:', error);
+      if (__DEV__) console.error('Discovery failed:', error);
       onFinished?.();
     });
 
@@ -217,10 +220,12 @@ export async function connectToDevice(
     });
     return device;
   } catch (secureError) {
-    console.warn(
-      `Secure connection to ${address} failed, trying insecure fallback...`,
-      secureError
-    );
+    if (__DEV__) {
+      console.warn(
+        `Secure connection to ${address} failed, trying insecure fallback...`,
+        secureError
+      );
+    }
   }
 
   // Second attempt: insecure RFCOMM socket (fallback)
@@ -232,10 +237,12 @@ export async function connectToDevice(
     });
     return device;
   } catch (insecureError) {
-    console.error(
-      `Failed to connect to ${address} (both secure and insecure):`,
-      insecureError
-    );
+    if (__DEV__) {
+      console.error(
+        `Failed to connect to ${address} (both secure and insecure):`,
+        insecureError
+      );
+    }
     return null;
   }
 }
@@ -254,7 +261,7 @@ export async function disconnectFromDevice(
     }
     return true;
   } catch (error) {
-    console.error('Failed to disconnect:', error);
+    if (__DEV__) console.error('Failed to disconnect:', error);
     return false;
   }
 }
