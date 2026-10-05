@@ -200,6 +200,25 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
     connectedAddressRef.current = null;
   }, []);
 
+  const ensureBluetoothEnabled = useCallback(
+    async (operation: 'scan' | 'reconnect'): Promise<boolean> => {
+      if (bluetoothEnabled) return true;
+
+      const enabled = await requestEnableBluetooth();
+      if (!enabled) {
+        setError(
+          `Bluetooth must be enabled to ${operation}`,
+          'RADIO_OFF'
+        );
+        return false;
+      }
+
+      setBluetoothEnabled(true);
+      return true;
+    },
+    [bluetoothEnabled, setError]
+  );
+
   const scan = useCallback(async () => {
     if (!platformSupported) {
       setStatus('error');
@@ -208,15 +227,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
     }
     if (connectingRef.current || scanningRef.current) return;
     // If Bluetooth is off, prompt the user to enable it
-    if (!bluetoothEnabled) {
-      const enabled = await requestEnableBluetooth();
-      if (!enabled) {
-        setError('Bluetooth must be enabled to scan for devices', 'RADIO_OFF');
-        return;
-      }
-      // User accepted — update our state
-      setBluetoothEnabled(true);
-    }
+    if (!(await ensureBluetoothEnabled('scan'))) return;
 
     scanningRef.current = true;
     setStatus('scanning');
@@ -265,7 +276,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
       setStatus('error');
       setError('Scan failed', 'DISCOVERY_FAILED');
     }
-  }, [bluetoothEnabled, platformSupported, setError, clearError]);
+  }, [ensureBluetoothEnabled, platformSupported, setError, clearError]);
 
   const stopScan = useCallback(async () => {
     scanningRef.current = false;
@@ -288,6 +299,13 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
   }, []);
 
   const autoReconnect = useCallback(async (): Promise<boolean> => {
+    if (!platformSupported) {
+      setStatus('error');
+      setError('Bluetooth Classic control is available on Android only.', 'UNSUPPORTED_PLATFORM');
+      return false;
+    }
+    if (!(await ensureBluetoothEnabled('reconnect'))) return false;
+
     const lastDevice = await getLastDevice();
     if (!lastDevice) return false;
 
@@ -310,7 +328,7 @@ export function useBluetoothDevice(): UseBluetoothDeviceReturn {
       setErrorMessage(null);
     }
     return result;
-  }, [connect]);
+  }, [connect, ensureBluetoothEnabled, platformSupported, setError]);
 
   const reconnect = useCallback(async (): Promise<boolean> => {
     return autoReconnect();
