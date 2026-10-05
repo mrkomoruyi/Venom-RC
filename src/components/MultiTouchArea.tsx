@@ -22,6 +22,7 @@ import React, {
   useMemo,
   useEffect,
 } from 'react';
+import { createPressTracker } from '../utils/pressTracker';
 import {
   View,
   ViewStyle,
@@ -69,10 +70,9 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
   // Registered buttons keyed by ID
   const buttonsRef = useRef<Map<string, ButtonRegion>>(new Map());
 
-  // Maps a native touch identifier → the button ID it's currently pressing
-  const activeTouchesRef = useRef<Map<string, string>>(new Map());
-  // A direction remains held until every finger pressing its region is lifted.
-  const buttonPressCountsRef = useRef<Map<string, number>>(new Map());
+  // Ref-counted tracker: maps touch identifiers to button IDs and
+  // ensures onPressIn fires on the first finger, onPressOut on the last.
+  const trackerRef = useRef(createPressTracker());
 
   // Whether we have fresh measurements (invalidated on layout change)
   const measuredRef = useRef(false);
@@ -158,15 +158,13 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
   const processStarts = useCallback(
     (touches: NativeTouchEvent[]) => {
       for (const touch of touches) {
-        // Skip if this touch identifier is already tracked
-        if (activeTouchesRef.current.has(touch.identifier)) continue;
-
         const buttonId = hitTest(touch.pageX, touch.pageY);
         if (buttonId) {
-          activeTouchesRef.current.set(touch.identifier, buttonId);
-          const count = buttonPressCountsRef.current.get(buttonId) ?? 0;
-          buttonPressCountsRef.current.set(buttonId, count + 1);
-          if (count === 0) buttonsRef.current.get(buttonId)?.onPressIn();
+          const isFirst = trackerRef.current.pressStart(
+            String(touch.identifier),
+            buttonId,
+          );
+          if (isFirst) buttonsRef.current.get(buttonId)?.onPressIn();
         }
       }
     },
@@ -175,26 +173,15 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
 
   const processEnds = useCallback((touches: NativeTouchEvent[]) => {
     for (const touch of touches) {
-      const buttonId = activeTouchesRef.current.get(touch.identifier);
-      if (buttonId) {
-        activeTouchesRef.current.delete(touch.identifier);
-        const remaining = (buttonPressCountsRef.current.get(buttonId) ?? 1) - 1;
-        if (remaining <= 0) {
-          buttonPressCountsRef.current.delete(buttonId);
-          buttonsRef.current.get(buttonId)?.onPressOut();
-        } else {
-          buttonPressCountsRef.current.set(buttonId, remaining);
-        }
-      }
+      const released = trackerRef.current.pressEnd(String(touch.identifier));
+      if (released) buttonsRef.current.get(released)?.onPressOut();
     }
   }, []);
 
   const releaseAllTouches = useCallback(() => {
-    for (const buttonId of buttonPressCountsRef.current.keys()) {
+    for (const buttonId of trackerRef.current.releaseAll()) {
       buttonsRef.current.get(buttonId)?.onPressOut();
     }
-    activeTouchesRef.current.clear();
-    buttonPressCountsRef.current.clear();
   }, []);
 
   useEffect(() => releaseAllTouches, [releaseAllTouches]);
@@ -203,6 +190,7 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
   // These fire for EVERY finger on Android and iOS, unlike the responder
   // callbacks which only get the primary touch.
   const handleTouchStart = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (e: any) => {
       const nativeEvent = e.nativeEvent;
       const changedTouches: NativeTouchEvent[] =
@@ -221,6 +209,7 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
   );
 
   const handleTouchEnd = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (e: any) => {
       const nativeEvent = e.nativeEvent;
       const changedTouches: NativeTouchEvent[] =
