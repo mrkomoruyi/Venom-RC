@@ -29,6 +29,7 @@
     "web": "expo start --web",
     "simulate": "python3 scripts/esp32_simulator.py",
     "build:apk": "cd android && ./gradlew assembleRelease",
+    "build:install:apk": "npm run build:apk && adb install -r android/app/build/outputs/apk/release/app-release.apk",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
     "lint": "eslint . --ext .ts,.tsx --max-warnings=0"

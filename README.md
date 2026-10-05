@@ -1,7 +1,8 @@
 # RC Command
 
 Android controller for an ESP32 Bluetooth Classic (SPP/RFCOMM) RC car. The UI
-is landscape-first and supports simultaneous throttle and steering input.
+is landscape-first and supports simultaneous throttle and steering input via
+ref-counted multi-touch.
 
 ## Run locally
 
@@ -32,6 +33,22 @@ sends `S` on release, backgrounding, unmount, disconnect, and conflicting
 inputs. Firmware **must not rely on that alone**: it must start a 500–750 ms
 watchdog after every movement command and stop motors if the deadline passes.
 This covers a killed app, depleted battery, or lost Bluetooth radio link.
+
+The app does **not** auto-reconnect on launch. Instead it loads the last-used
+device name and shows a "Reconnect" button in the toolbar so the user is
+always in control.
+
+## Development
+
+For UI development without a physical Bluetooth device, swap the hook import
+in `ControllerScreen.tsx`:
+
+```ts
+import { useMockBluetoothDevice as useBluetoothDevice } from '../hooks/useMockBluetoothDevice';
+```
+
+Alternatively, `npm run simulate` starts the included ESP32 protocol simulator
+for end-to-end testing against the real Bluetooth stack.
 
 ## Quality checks
 
