@@ -8,6 +8,7 @@ import { ControlButton } from './ControlButton';
 import { COLORS, SPACING } from '../constants/theme';
 
 interface DirectionalPadProps {
+  disabled?: boolean;
   onForwardPress: () => void;
   onForwardRelease: () => void;
   onBackwardPress: () => void;
@@ -15,6 +16,7 @@ interface DirectionalPadProps {
 }
 
 export function DirectionalPad({
+  disabled = false,
   onForwardPress,
   onForwardRelease,
   onBackwardPress,
@@ -27,6 +29,7 @@ export function DirectionalPad({
         label="FWD"
         onPressIn={onForwardPress}
         onPressOut={onForwardRelease}
+        disabled={disabled}
         size="large"
         accentColor={COLORS.accentPrimary}
         glowColor={COLORS.accentGlow}
@@ -37,6 +40,7 @@ export function DirectionalPad({
         label="REV"
         onPressIn={onBackwardPress}
         onPressOut={onBackwardRelease}
+        disabled={disabled}
         size="large"
         accentColor={COLORS.accentPrimary}
         glowColor={COLORS.accentGlow}

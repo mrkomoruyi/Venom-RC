@@ -16,9 +16,17 @@
  * by tracking active directions and sending combined commands.
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, StatusBar, Alert, AppState } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  StatusBar,
+  Alert,
+  AppState,
+  useWindowDimensions,
+} from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { COLORS, SPACING } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
 import { COMMANDS, Command } from '../constants/commands';
 import { resolveDirectionCommand } from '../utils/controlProtocol';
 import { useBluetoothDevice } from '../hooks/useBluetoothDevice';
@@ -30,9 +38,11 @@ import { DeviceListModal } from '../components/DeviceListModal';
 import { MultiTouchArea } from '../components/MultiTouchArea';
 
 export function ControllerScreen() {
+  const { width } = useWindowDimensions();
   const [lightsOn, setLightsOn] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const bt = useBluetoothDevice();
+  const isConnected = bt.status === 'connected';
 
   // Track which directional buttons are currently held down
   const activeDirectionsRef = useRef<Set<string>>(new Set());
@@ -77,6 +87,13 @@ export function ControllerScreen() {
       stop();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isConnected) {
+      activeDirectionsRef.current.clear();
+      activeCommandRef.current = COMMANDS.STOP;
+    }
+  }, [isConnected]);
 
   // Lock to landscape on mount
   useEffect(() => {
@@ -210,6 +227,7 @@ export function ControllerScreen() {
         {/* Left: Forward/Backward */}
         <View style={styles.leftZone}>
           <DirectionalPad
+            disabled={!isConnected}
             onForwardPress={handleForwardPress}
             onForwardRelease={handleForwardRelease}
             onBackwardPress={handleBackwardPress}
@@ -244,6 +262,29 @@ export function ControllerScreen() {
           {/* Ambient glow in center */}
           <View style={styles.ambientGlow} />
 
+          <View
+            style={styles.instructionPanel}
+            pointerEvents="none"
+            accessibilityRole="text"
+            accessibilityLabel={
+              isConnected
+                ? 'Hold a direction to drive. Combine throttle and steering for precise movement.'
+                : 'Connect to the RC car to enable driving controls.'
+            }
+          >
+            <Text style={[styles.instructionEyebrow, !isConnected && styles.instructionMuted]}>
+              {isConnected ? 'CONTROL READY' : 'CONTROL LOCKED'}
+            </Text>
+            <Text style={styles.instructionTitle}>
+              {isConnected ? 'HOLD TO DRIVE' : 'CONNECT YOUR CAR'}
+            </Text>
+            <Text style={styles.instructionBody}>
+              {isConnected
+                ? 'Use throttle and steering together for combined movement.'
+                : 'Choose a Bluetooth device from the CONNECT button above.'}
+            </Text>
+          </View>
+
         </View>
 
         {/* Right: Utility buttons + Steering */}
@@ -251,6 +292,8 @@ export function ControllerScreen() {
           <View style={styles.rightContent}>
             {/* Honk & Lights floating to the left of steering */}
             <ToolbarButtons
+              compact={width < 840}
+              disabled={!isConnected}
               lightsOn={lightsOn}
               onHonkPress={handleHonkPress}
               onHonkRelease={handleHonkRelease}
@@ -259,6 +302,7 @@ export function ControllerScreen() {
             {/* Left/Right steering */}
             <View style={styles.steeringContainer}>
               <SteeringPad
+                disabled={!isConnected}
                 onLeftPress={handleLeftPress}
                 onLeftRelease={handleLeftRelease}
                 onRightPress={handleRightPress}
@@ -280,9 +324,10 @@ export function ControllerScreen() {
           setShowDeviceModal(false);
           bt.stopScan();
         }}
-        onForgetLastDevice={() => {
-          void bt.forgetLastDevice();
-        }}
+        onForgetLastDevice={bt.forgetLastDevice}
+        errorMessage={bt.errorMessage}
+        onRetry={() => bt.scan()}
+        savedDeviceName={bt.savedDeviceName}
       />
     </View>
   );
@@ -304,23 +349,61 @@ const styles = StyleSheet.create({
     paddingLeft: SPACING.lg,
   },
   centerZone: {
-    flex: 1.5,
+    flex: 1,
     position: 'relative',
     overflow: 'hidden',
   },
+  instructionPanel: {
+    position: 'absolute',
+    top: '36%',
+    left: '14%',
+    right: '14%',
+    alignItems: 'center',
+    padding: SPACING.lg,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.borderSubtle,
+    backgroundColor: `${COLORS.backgroundCard}D9`,
+  },
+  instructionEyebrow: {
+    ...TYPOGRAPHY.label,
+    color: COLORS.success,
+    fontSize: 10,
+    letterSpacing: 1.4,
+  },
+  instructionMuted: {
+    color: COLORS.textMuted,
+  },
+  instructionTitle: {
+    ...TYPOGRAPHY.heading,
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    marginTop: SPACING.xs,
+    textAlign: 'center',
+  },
+  instructionBody: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.textSecondary,
+    lineHeight: 15,
+    marginTop: SPACING.sm,
+    maxWidth: 220,
+    textAlign: 'center',
+  },
   rightZone: {
-    flex: 1.5,
+    flex: 2,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingRight: SPACING.lg,
+    paddingRight: 0,
   },
   rightContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.xl,
+    flexShrink: 1,
+    gap: SPACING.sm,
   },
   steeringContainer: {
-    marginLeft: SPACING.sm,
+    marginLeft: 0,
+    flexShrink: 1,
   },
   // Carbon fiber decorative grid
   carbonGrid: {

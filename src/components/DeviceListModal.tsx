@@ -2,7 +2,7 @@
  * DeviceListModal — Sleek overlay modal for scanning and selecting BT devices.
  * Shows bonded + discovered devices with connect action.
  */
-import React from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,9 @@ import {
   FlatList,
   StyleSheet,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import {
   COLORS,
   SPACING,
@@ -28,7 +30,10 @@ interface DeviceListModalProps {
   onSelectDevice: (device: BTDevice) => void;
   onScan: () => void;
   onClose: () => void;
-  onForgetLastDevice: () => void;
+  onForgetLastDevice: () => void | Promise<void>;
+  errorMessage?: string | null;
+  onRetry?: () => void;
+  savedDeviceName?: string | null;
 }
 
 export function DeviceListModal({
@@ -39,12 +44,106 @@ export function DeviceListModal({
   onScan,
   onClose,
   onForgetLastDevice,
+  errorMessage,
+  onRetry,
+  savedDeviceName,
 }: DeviceListModalProps) {
   const isScanning = status === 'scanning';
+  const hasSavedDevice =
+    savedDeviceName !== undefined ? Boolean(savedDeviceName) : true;
+
+  const [forgetSuccess, setForgetSuccess] = useState(false);
+  const [isForgetting, setIsForgetting] = useState(false);
+
+  const successScale = useRef(new Animated.Value(1)).current;
+  const successOpacity = useRef(new Animated.Value(1)).current;
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Reset visual feedback state when modal is closed
+  useEffect(() => {
+    if (!visible) {
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+      }
+      setForgetSuccess(false);
+      setIsForgetting(false);
+      successOpacity.setValue(1);
+      successScale.setValue(1);
+    }
+  }, [visible, successOpacity, successScale]);
+
+  const handleForgetLastDevice = useCallback(async () => {
+    if (isForgetting || forgetSuccess) return;
+    setIsForgetting(true);
+    try {
+      await onForgetLastDevice();
+      setIsForgetting(false);
+      setForgetSuccess(true);
+
+      // Trigger subtle success haptic
+      void Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success
+      ).catch(() => {});
+
+      // Pop-in spring animation for the success feedback
+      successScale.setValue(0.85);
+      successOpacity.setValue(0);
+      Animated.parallel([
+        Animated.spring(successScale, {
+          toValue: 1,
+          friction: 6,
+          tension: 100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(successOpacity, {
+          toValue: 1,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+      ]).start();
+
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+      }
+
+      // Revert after 2.5 seconds with a smooth fade
+      resetTimerRef.current = setTimeout(() => {
+        Animated.timing(successOpacity, {
+          toValue: 0,
+          duration: 250,
+          useNativeDriver: true,
+        }).start(() => {
+          setForgetSuccess(false);
+          successOpacity.setValue(1);
+          successScale.setValue(1);
+        });
+      }, 2500);
+    } catch {
+      setIsForgetting(false);
+    }
+  }, [
+    isForgetting,
+    forgetSuccess,
+    onForgetLastDevice,
+    successOpacity,
+    successScale,
+  ]);
 
   const renderDevice = ({ item }: { item: BTDevice }) => (
     <Pressable
       onPress={() => onSelectDevice(item)}
+      accessibilityRole="button"
+      accessibilityLabel={`Connect to ${item.name}`}
+      accessibilityHint="Connect to this paired Bluetooth device"
       style={({ pressed }) => [
         styles.deviceItem,
         pressed && styles.deviceItemPressed,
@@ -81,6 +180,10 @@ export function DeviceListModal({
           <Pressable
             onPress={onScan}
             disabled={isScanning}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isScanning ? 'Scanning for devices' : 'Scan for Bluetooth devices'
+            }
             style={[styles.scanButton, isScanning && styles.scanButtonDisabled]}
           >
             {isScanning ? (
@@ -91,14 +194,83 @@ export function DeviceListModal({
             </Text>
           </Pressable>
 
-          <Pressable
-            onPress={onForgetLastDevice}
-            style={styles.forgetButton}
-            accessibilityRole="button"
-            accessibilityLabel="Forget saved RC car"
+          {errorMessage ? (
+            <View style={styles.errorPanel}>
+              <Text style={styles.errorTitle}>Could not find a connection</Text>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+              {onRetry ? (
+                <Pressable onPress={onRetry} style={styles.retryButton}>
+                  <Text style={styles.retryText}>TRY AGAIN</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* Forget saved device with dynamic feedback */}
+          <Animated.View
+            style={[
+              styles.forgetButtonWrapper,
+              {
+                opacity: successOpacity,
+                transform: [{ scale: successScale }],
+              },
+            ]}
           >
-            <Text style={styles.forgetText}>FORGET SAVED CAR</Text>
-          </Pressable>
+            <Pressable
+              onPress={handleForgetLastDevice}
+              disabled={
+                isForgetting ||
+                forgetSuccess ||
+                (!hasSavedDevice && !forgetSuccess)
+              }
+              accessibilityRole={forgetSuccess ? 'alert' : 'button'}
+              accessibilityLabel={
+                forgetSuccess
+                  ? 'Saved RC car forgotten successfully'
+                  : hasSavedDevice
+                  ? 'Forget saved RC car'
+                  : 'No saved RC car'
+              }
+              accessibilityLiveRegion="polite"
+              accessibilityState={{
+                disabled:
+                  isForgetting || (!hasSavedDevice && !forgetSuccess),
+                busy: isForgetting,
+              }}
+              style={({ pressed }) => [
+                styles.forgetButton,
+                forgetSuccess && styles.forgetButtonSuccess,
+                !hasSavedDevice &&
+                  !forgetSuccess &&
+                  styles.forgetButtonDisabled,
+                pressed && !forgetSuccess && styles.forgetButtonPressed,
+              ]}
+            >
+              {isForgetting ? (
+                <>
+                  <ActivityIndicator
+                    size="small"
+                    color={COLORS.accentPrimary}
+                  />
+                  <Text style={styles.forgetText}>FORGETTING...</Text>
+                </>
+              ) : forgetSuccess ? (
+                <>
+                  <Text style={styles.successCheckmark}>✓</Text>
+                  <Text style={styles.successText}>SAVED CAR FORGOTTEN</Text>
+                </>
+              ) : (
+                <Text
+                  style={[
+                    styles.forgetText,
+                    !hasSavedDevice && styles.forgetTextDisabled,
+                  ]}
+                >
+                  {hasSavedDevice ? 'FORGET SAVED CAR' : 'NO SAVED CAR'}
+                </Text>
+              )}
+            </Pressable>
+          </Animated.View>
 
           {/* Device list */}
           <FlatList
@@ -155,8 +327,8 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
   closeButton: {
-    width: 32,
-    height: 32,
+    minWidth: 44,
+    minHeight: 44,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
@@ -174,6 +346,7 @@ const styles = StyleSheet.create({
     marginHorizontal: SPACING.lg,
     marginVertical: SPACING.md,
     paddingVertical: SPACING.sm,
+    minHeight: 44,
     borderRadius: BORDER_RADIUS.sm,
     borderWidth: 1,
     borderColor: COLORS.accentDim,
@@ -187,16 +360,62 @@ const styles = StyleSheet.create({
     color: COLORS.accentPrimary,
     fontSize: 11,
   },
-  forgetButton: {
+  forgetButtonWrapper: {
     alignSelf: 'center',
-    paddingVertical: SPACING.xs,
+    marginBottom: SPACING.sm,
+  },
+  forgetButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    paddingVertical: SPACING.xs + 2,
     paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.round,
+    backgroundColor: COLORS.backgroundElevated,
+    borderWidth: 1,
+    borderColor: COLORS.borderSubtle,
+    minHeight: 34,
+  },
+  forgetButtonPressed: {
+    backgroundColor: 'rgba(255, 23, 68, 0.1)',
+    borderColor: 'rgba(255, 23, 68, 0.35)',
+  },
+  forgetButtonDisabled: {
+    opacity: 0.45,
+    backgroundColor: 'transparent',
+    borderColor: 'transparent',
+  },
+  forgetButtonSuccess: {
+    backgroundColor: 'rgba(0, 230, 118, 0.14)',
+    borderColor: COLORS.success,
+    shadowColor: COLORS.success,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 10,
+    elevation: 4,
   },
   forgetText: {
     ...TYPOGRAPHY.caption,
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.8,
+  },
+  forgetTextDisabled: {
     color: COLORS.textMuted,
-    fontSize: 10,
-    textDecorationLine: 'underline',
+  },
+  successCheckmark: {
+    color: COLORS.success,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  successText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.success,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
   list: {
     maxHeight: 250,
@@ -255,5 +474,37 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.body,
     color: COLORS.textMuted,
     textAlign: 'center',
+  },
+  errorPanel: {
+    marginHorizontal: SPACING.lg,
+    marginBottom: SPACING.sm,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: `${COLORS.danger}55`,
+    backgroundColor: `${COLORS.danger}10`,
+  },
+  errorTitle: {
+    ...TYPOGRAPHY.label,
+    color: COLORS.danger,
+    fontSize: 11,
+  },
+  errorText: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.textSecondary,
+    marginTop: SPACING.xs,
+  },
+  retryButton: {
+    alignSelf: 'flex-start',
+    marginTop: SPACING.sm,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: `${COLORS.danger}20`,
+  },
+  retryText: {
+    ...TYPOGRAPHY.label,
+    color: COLORS.danger,
+    fontSize: 10,
   },
 });

@@ -8,6 +8,7 @@ import { ControlButton } from './ControlButton';
 import { COLORS, SPACING } from '../constants/theme';
 
 interface SteeringPadProps {
+  disabled?: boolean;
   onLeftPress: () => void;
   onLeftRelease: () => void;
   onRightPress: () => void;
@@ -15,6 +16,7 @@ interface SteeringPadProps {
 }
 
 export function SteeringPad({
+  disabled = false,
   onLeftPress,
   onLeftRelease,
   onRightPress,
@@ -27,6 +29,7 @@ export function SteeringPad({
         label="LEFT"
         onPressIn={onLeftPress}
         onPressOut={onLeftRelease}
+        disabled={disabled}
         size="large"
         accentColor={COLORS.bluePrimary}
         glowColor={COLORS.blueGlow}
@@ -37,6 +40,7 @@ export function SteeringPad({
         label="RIGHT"
         onPressIn={onRightPress}
         onPressOut={onRightRelease}
+        disabled={disabled}
         size="large"
         accentColor={COLORS.bluePrimary}
         glowColor={COLORS.blueGlow}
@@ -52,6 +56,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   spacer: {
-    width: SPACING.md,
+    width: SPACING.sm,
   },
 });

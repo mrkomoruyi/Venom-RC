@@ -1,8 +1,8 @@
 /**
- * StatusIndicator — Pulsing connection status dot with label.
+ * StatusIndicator — connection status with label.
  */
-import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet } from 'react-native';
 import { COLORS, TYPOGRAPHY, SPACING } from '../constants/theme';
 import { ConnectionStatus } from '../hooks/useBluetoothDevice';
 
@@ -11,86 +11,42 @@ interface StatusIndicatorProps {
   deviceName?: string | null;
 }
 
-const STATUS_CONFIG: Record<
-  ConnectionStatus,
-  { color: string; label: string; pulse: boolean }
-> = {
+const STATUS_CONFIG: Record<ConnectionStatus, { color: string; label: string }> = {
   disconnected: {
     color: COLORS.textMuted,
     label: 'Disconnected',
-    pulse: false,
   },
   connecting: {
     color: COLORS.warning,
     label: 'Connecting...',
-    pulse: true,
   },
   connected: {
     color: COLORS.success,
-    label: 'Connected',
-    pulse: false,
+    label: 'Ready to drive',
   },
   scanning: {
     color: COLORS.accentPrimary,
     label: 'Scanning...',
-    pulse: true,
   },
   error: {
     color: COLORS.danger,
     label: 'Error',
-    pulse: false,
   },
 };
 
 export function StatusIndicator({ status, deviceName }: StatusIndicatorProps) {
-  const pulseAnim = useRef(new Animated.Value(1)).current;
   const config = STATUS_CONFIG[status];
-
-  useEffect(() => {
-    if (config.pulse) {
-      const animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 0.3,
-            duration: 600,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 600,
-            useNativeDriver: true,
-          }),
-        ])
-      );
-      animation.start();
-      return () => animation.stop();
-    } else {
-      pulseAnim.setValue(1);
-    }
-  }, [config.pulse, pulseAnim]);
 
   return (
     <View style={styles.container}>
-      <Animated.View
-        style={[
-          styles.dot,
-          {
-            backgroundColor: config.color,
-            opacity: pulseAnim,
-            shadowColor: config.color,
-            shadowOpacity: 0.6,
-            shadowRadius: 6,
-            elevation: 4,
-          },
-        ]}
-      />
       <View style={styles.textContainer}>
         <Text style={[styles.statusText, { color: config.color }]}>
+          {status === 'connected' ? '● ' : '○ '}
           {config.label}
         </Text>
         {deviceName && status === 'connected' && (
           <Text style={styles.deviceName} numberOfLines={1}>
-            {deviceName}
+            {`· ${deviceName}`}
           </Text>
         )}
       </View>
@@ -104,13 +60,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: SPACING.sm,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
   textContainer: {
-    flexDirection: 'column',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    maxWidth: 240,
   },
   statusText: {
     ...TYPOGRAPHY.caption,
@@ -121,6 +75,6 @@ const styles = StyleSheet.create({
   deviceName: {
     ...TYPOGRAPHY.caption,
     color: COLORS.textSecondary,
-    maxWidth: 120,
+    flexShrink: 1,
   },
 });

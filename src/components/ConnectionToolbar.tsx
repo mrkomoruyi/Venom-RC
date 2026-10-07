@@ -50,9 +50,13 @@ export function ConnectionToolbar({
       </View>
 
       {/* Center: Status */}
-      <View style={styles.statusSection}>
+      <View style={styles.statusSection} pointerEvents="none">
         <StatusIndicator status={status} deviceName={deviceName} />
-        {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+        {errorMessage ? (
+          <Text style={styles.errorText} numberOfLines={2}>
+            {errorMessage}
+          </Text>
+        ) : null}
       </View>
 
       {/* Right: Actions */}
@@ -105,6 +109,7 @@ export function ConnectionToolbar({
 
 const styles = StyleSheet.create({
   toolbar: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -135,8 +140,11 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   statusSection: {
+    position: 'absolute',
+    left: '50%',
+    width: 240,
+    marginLeft: -120,
     alignItems: 'center',
-    maxWidth: 240,
   },
   errorText: {
     ...TYPOGRAPHY.caption,

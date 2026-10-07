@@ -19,6 +19,7 @@ import select
 import logging
 import argparse
 import threading
+import atexit
 from datetime import datetime
 
 # Setup debug file logger
@@ -289,6 +290,7 @@ def main():
     parser = argparse.ArgumentParser(description="Simulate an ESP32 Bluetooth Car on Linux.")
     parser.add_argument("--name", default="ESP32_CAR", help="Bluetooth device name (default: ESP32_CAR)")
     parser.add_argument("--adapter", default="hci0", help="Bluetooth adapter to use (default: hci0)")
+    parser.add_argument("--reset", action="store_true", help="Restore Bluetooth adapter settings to normal and exit")
     args = parser.parse_args()
 
     # Unblock Bluetooth via rfkill if needed
@@ -307,165 +309,260 @@ def main():
 
     adapter_props = dbus.Interface(adapter_obj, "org.freedesktop.DBus.Properties")
 
-    # Save original settings
-    original_alias = str(adapter_props.Get("org.bluez.Adapter1", "Alias"))
+    # Read current adapter settings
+    current_alias = str(adapter_props.Get("org.bluez.Adapter1", "Alias"))
+    system_name = str(adapter_props.Get("org.bluez.Adapter1", "Name"))
     original_discoverable = bool(adapter_props.Get("org.bluez.Adapter1", "Discoverable"))
+    original_discoverable_timeout = dbus.UInt32(adapter_props.Get("org.bluez.Adapter1", "DiscoverableTimeout"))
+    original_pairable = bool(adapter_props.Get("org.bluez.Adapter1", "Pairable"))
     adapter_addr = str(adapter_props.Get("org.bluez.Adapter1", "Address"))
+
+    # Direct reset mode
+    if args.reset:
+        print(f"\033[93mResetting Bluetooth settings to system defaults...\033[0m")
+        try:
+            adapter_props.Set("org.bluez.Adapter1", "Alias", dbus.String(system_name))
+        except Exception as e:
+            print(f"Notice: could not reset Alias: {e}")
+        try:
+            adapter_props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(False))
+        except Exception as e:
+            print(f"Notice: could not reset Discoverable: {e}")
+        print(f"\033[92mDone! Bluetooth adapter reset to '{system_name}' (Discoverable: Off).\033[0m")
+        return
+
+    # If the alias is already our simulator name (stale from a previous run that
+    # didn't clean up), it can't be trusted. Fall back to the immutable BlueZ
+    # "Name" property which always holds the true system/hardware name.
+    if current_alias in (args.name, "ESP32_CAR"):
+        original_alias = system_name
+        original_discoverable = False
+        logger.warning(f"Alias already set to '{current_alias}' (stale from previous run). "
+                       f"Will restore to system name '{original_alias}' on exit.")
+    else:
+        original_alias = current_alias
 
     state = CarState()
     state.adapter_name = args.name
     state.adapter_addr = adapter_addr
 
-    # Ensure adapter is powered, named, discoverable, and pairable
-    adapter_props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
-    adapter_props.Set("org.bluez.Adapter1", "Alias", dbus.String(args.name))
-    adapter_props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(True))
-    adapter_props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0))
-    adapter_props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
+    cleaned_up = False
+    profile_registered = False
+    agent_registered = False
+    loop = None
 
-    logger.info(f"Adapter configured: Alias={args.name}, Address={adapter_addr}")
-
-    # Setup Auto-Pairing Agent
+    # Track profile and agent managers for cleanup
     bluez_obj = bus.get_object(BLUEZ_BUS_NAME, "/org/bluez")
     agent_mgr = dbus.Interface(bluez_obj, "org.bluez.AgentManager1")
-    agent = AutoPairingAgent(bus, AGENT_PATH)
-    try:
-        agent_mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
-        agent_mgr.RequestDefaultAgent(AGENT_PATH)
-        logger.info("Agent registered as default (NoInputNoOutput)")
-    except Exception as e:
-        logger.warning(f"RegisterAgent notice: {e}")
+    profile_mgr = dbus.Interface(bluez_obj, "org.bluez.ProfileManager1")
 
-    # Connection handler
-    def client_worker(client_path, fd_num):
-        logger.info(f"client_worker started for {client_path} (fd={fd_num})")
-        state.connected = True
+    # Cleanup function — idempotent, safe from interruptions, and restores all settings
+    def cleanup():
+        nonlocal cleaned_up
+        if cleaned_up:
+            return
+        cleaned_up = True
 
-        # Ensure the socket is in blocking mode so os.read waits for commands
-        # instead of throwing BlockingIOError (EAGAIN) on idle sockets
+        # Temporarily block interrupts during cleanup so restore is not aborted
+        for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, 'SIGHUP', None), getattr(signal, 'SIGQUIT', None)):
+            if sig is not None:
+                try:
+                    signal.signal(sig, signal.SIG_IGN)
+                except Exception:
+                    pass
+
+        sys.stdout.write("\033[?25h\n\n")
+        sys.stdout.flush()
+        print("\033[93mRestoring Bluetooth settings...\033[0m")
+
         try:
-            os.set_blocking(fd_num, True)
-            logger.info(f"Socket fd={fd_num} set to blocking mode successfully")
-        except Exception as e:
-            logger.error(f"Failed to set blocking on fd={fd_num}: {e}")
+            state.stop_motors("Simulator terminating")
+        except Exception:
+            pass
 
-        try:
-            client_obj = bus.get_object(BLUEZ_BUS_NAME, client_path)
-            c_props = dbus.Interface(client_obj, "org.freedesktop.DBus.Properties")
-            state.client_name = str(c_props.Get("org.bluez.Device1", "Name"))
-            state.client_addr = str(c_props.Get("org.bluez.Device1", "Address"))
-            logger.info(f"Client info: Name='{state.client_name}', Address='{state.client_addr}'")
-        except Exception as e:
-            state.client_name = "Connected Device"
-            logger.warning(f"Could not read client properties: {e}")
-
-        render_dashboard(state)
-
-        # Read loop with select so we don't block forever and can cleanly detect EOF / disconnect
-        try:
-            while state.connected:
-                # Wait up to 1 second for data to become readable
-                rlist, _, xlist = select.select([fd_num], [], [fd_num], 1.0)
-                if xlist:
-                    logger.warning("Socket error in xlist")
-                    break
-                if not rlist:
-                    # Timeout reached, still connected — loop again
-                    continue
-
-                data = os.read(fd_num, 64)
-                if not data:
-                    logger.info("Client closed connection (EOF)")
-                    break
-
-                text = data.decode("utf-8", errors="ignore")
-                logger.debug(f"Raw data received: {repr(data)} -> '{text}'")
-                for ch in text:
-                    state.handle_command(ch)
-
-                render_dashboard(state)
-        except Exception as e:
-            logger.error(f"Exception in client_worker loop: {e}", exc_info=True)
-        finally:
-            logger.info("Cleaning up disconnected client")
-            state.connected = False
-            state.direction = "STOP"
-            state.direction_label = "■ Stopped"
-            state.left_motor = 0
-            state.right_motor = 0
-            state.client_name = "Waiting for phone..."
+        if profile_registered:
             try:
-                os.close(fd_num)
+                profile_mgr.UnregisterProfile(PROFILE_PATH)
             except Exception:
                 pass
-            render_dashboard(state)
 
-    def on_connect(path, fd_num):
-        logger.info(f"on_connect callback invoked: path={path}, fd={fd_num}")
-        t = threading.Thread(target=client_worker, args=(path, fd_num), daemon=True)
-        t.start()
+        if agent_registered:
+            try:
+                agent_mgr.UnregisterAgent(AGENT_PATH)
+            except Exception:
+                pass
 
-    # Register SPP Profile with custom ServiceRecord and channel 1
-    profile_mgr = dbus.Interface(bluez_obj, "org.bluez.ProfileManager1")
-    profile = SPPProfile(bus, PROFILE_PATH, on_connect)
-    opts = {
-        "ServiceRecord": SPP_SERVICE_RECORD,
-        "Channel": dbus.UInt16(1),
-        "Role": "server",
-        "RequireAuthentication": False,
-        "RequireAuthorization": False,
-        "AutoConnect": False,
-    }
-
-    try:
-        profile_mgr.RegisterProfile(PROFILE_PATH, SPP_UUID, opts)
-        logger.info("SPP Profile registered with ServiceRecord & Channel=1")
-    except Exception as e:
-        logger.error(f"Failed to register profile: {e}", exc_info=True)
-        print(f"Failed to register Bluetooth profile: {e}")
-        sys.exit(1)
-
-    loop = GLib.MainLoop()
-
-    # Cleanup function
-    def cleanup(*args):
-        sys.stdout.write("\033[?25h\n\n")
-        print("\033[93mRestoring Bluetooth settings...\033[0m")
-        try:
-            profile_mgr.UnregisterProfile(PROFILE_PATH)
-        except Exception:
-            pass
-        try:
-            agent_mgr.UnregisterAgent(AGENT_PATH)
-        except Exception:
-            pass
+        # Restore each property individually so failure in one doesn't prevent others
         try:
             adapter_props.Set("org.bluez.Adapter1", "Alias", dbus.String(original_alias))
+        except Exception as e:
+            logger.error(f"Failed to restore adapter alias: {e}")
+            print(f"\033[91mWarning: Could not restore Bluetooth alias: {e}\033[0m")
+
+        try:
             adapter_props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(original_discoverable))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to restore Discoverable: {e}")
+
+        try:
+            adapter_props.Set("org.bluez.Adapter1", "DiscoverableTimeout", original_discoverable_timeout)
+        except Exception as e:
+            logger.error(f"Failed to restore DiscoverableTimeout: {e}")
+
+        try:
+            adapter_props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(original_pairable))
+        except Exception as e:
+            logger.error(f"Failed to restore Pairable: {e}")
+
         logger.info("Cleanup complete. PC Bluetooth restored.")
         print(f"\033[92mDone! PC Bluetooth restored to '{original_alias}'.\033[0m")
-        sys.exit(0)
 
-    signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
+    # Register atexit handler so abnormal Python exits (e.g. exceptions or sys.exit) still restore settings
+    atexit.register(cleanup)
 
-    # Initial display
-    os.system("clear")
-    render_dashboard(state)
+    # Signal handlers — safely quit the GLib loop if running, or run cleanup and exit
+    def signal_handler(signum, frame):
+        logger.info(f"Signal {signum} received, stopping simulator...")
+        if loop is not None and loop.is_running():
+            loop.quit()
+        else:
+            cleanup()
+            sys.exit(0)
 
-    # Periodic timer to refresh dashboard (e.g. for horn timeout)
-    def periodic_tick():
-        state.enforce_motion_watchdog()
-        render_dashboard(state)
-        return True
-
-    GLib.timeout_add(200, periodic_tick)
+    for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, 'SIGHUP', None), getattr(signal, 'SIGQUIT', None)):
+        if sig is not None:
+            try:
+                signal.signal(sig, signal_handler)
+            except Exception:
+                pass
 
     try:
+        # Ensure adapter is powered, named, discoverable, and pairable
+        adapter_props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
+        adapter_props.Set("org.bluez.Adapter1", "Alias", dbus.String(args.name))
+        adapter_props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(True))
+        adapter_props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0))
+        adapter_props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
+
+        logger.info(f"Adapter configured: Alias={args.name}, Address={adapter_addr}")
+
+        # Setup Auto-Pairing Agent
+        agent = AutoPairingAgent(bus, AGENT_PATH)
+        try:
+            agent_mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+            agent_mgr.RequestDefaultAgent(AGENT_PATH)
+            agent_registered = True
+            logger.info("Agent registered as default (NoInputNoOutput)")
+        except Exception as e:
+            logger.warning(f"RegisterAgent notice: {e}")
+
+        # Connection handler
+        def client_worker(client_path, fd_num):
+            logger.info(f"client_worker started for {client_path} (fd={fd_num})")
+            state.connected = True
+
+            # Ensure the socket is in blocking mode so os.read waits for commands
+            # instead of throwing BlockingIOError (EAGAIN) on idle sockets
+            try:
+                os.set_blocking(fd_num, True)
+                logger.info(f"Socket fd={fd_num} set to blocking mode successfully")
+            except Exception as e:
+                logger.error(f"Failed to set blocking on fd={fd_num}: {e}")
+
+            try:
+                client_obj = bus.get_object(BLUEZ_BUS_NAME, client_path)
+                c_props = dbus.Interface(client_obj, "org.freedesktop.DBus.Properties")
+                state.client_name = str(c_props.Get("org.bluez.Device1", "Name"))
+                state.client_addr = str(c_props.Get("org.bluez.Device1", "Address"))
+                logger.info(f"Client info: Name='{state.client_name}', Address='{state.client_addr}'")
+            except Exception as e:
+                state.client_name = "Connected Device"
+                logger.warning(f"Could not read client properties: {e}")
+
+            render_dashboard(state)
+
+            # Read loop with select so we don't block forever and can cleanly detect EOF / disconnect
+            try:
+                while state.connected:
+                    # Wait up to 1 second for data to become readable
+                    rlist, _, xlist = select.select([fd_num], [], [fd_num], 1.0)
+                    if xlist:
+                        logger.warning("Socket error in xlist")
+                        break
+                    if not rlist:
+                        # Timeout reached, still connected — loop again
+                        continue
+
+                    data = os.read(fd_num, 64)
+                    if not data:
+                        logger.info("Client closed connection (EOF)")
+                        break
+
+                    text = data.decode("utf-8", errors="ignore")
+                    logger.debug(f"Raw data received: {repr(data)} -> '{text}'")
+                    for ch in text:
+                        state.handle_command(ch)
+
+                    render_dashboard(state)
+            except Exception as e:
+                logger.error(f"Exception in client_worker loop: {e}", exc_info=True)
+            finally:
+                logger.info("Cleaning up disconnected client")
+                state.connected = False
+                state.direction = "STOP"
+                state.direction_label = "■ Stopped"
+                state.left_motor = 0
+                state.right_motor = 0
+                state.client_name = "Waiting for phone..."
+                try:
+                    os.close(fd_num)
+                except Exception:
+                    pass
+                render_dashboard(state)
+
+        def on_connect(path, fd_num):
+            logger.info(f"on_connect callback invoked: path={path}, fd={fd_num}")
+            t = threading.Thread(target=client_worker, args=(path, fd_num), daemon=True)
+            t.start()
+
+        # Register SPP Profile with custom ServiceRecord and channel 1
+        profile = SPPProfile(bus, PROFILE_PATH, on_connect)
+        opts = {
+            "ServiceRecord": SPP_SERVICE_RECORD,
+            "Channel": dbus.UInt16(1),
+            "Role": "server",
+            "RequireAuthentication": False,
+            "RequireAuthorization": False,
+            "AutoConnect": False,
+        }
+
+        try:
+            profile_mgr.RegisterProfile(PROFILE_PATH, SPP_UUID, opts)
+            profile_registered = True
+            logger.info("SPP Profile registered with ServiceRecord & Channel=1")
+        except Exception as e:
+            logger.error(f"Failed to register profile: {e}", exc_info=True)
+            print(f"Failed to register Bluetooth profile: {e}")
+            sys.exit(1)
+
+        loop = GLib.MainLoop()
+
+        # Initial display
+        os.system("clear")
+        render_dashboard(state)
+
+        # Periodic timer to refresh dashboard (e.g. for horn timeout)
+        def periodic_tick():
+            state.enforce_motion_watchdog()
+            render_dashboard(state)
+            return True
+
+        GLib.timeout_add(200, periodic_tick)
+
         loop.run()
     except KeyboardInterrupt:
+        pass
+    finally:
         cleanup()
 
 if __name__ == "__main__":

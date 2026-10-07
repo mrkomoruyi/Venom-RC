@@ -33,13 +33,15 @@ interface ControlButtonProps {
   /** Called on tap (for toggle buttons) */
   onPress?: () => void;
   /** Button size variant */
-  size?: 'small' | 'medium' | 'large';
+  size?: 'small' | 'utility' | 'medium' | 'large';
   /** Accent color override */
   accentColor?: string;
   /** Glow color override */
   glowColor?: string;
   /** Whether the button is in active/toggled state */
   isActive?: boolean;
+  /** Whether the control is unavailable */
+  disabled?: boolean;
   /** Custom container style */
   style?: ViewStyle;
   /** Custom icon style */
@@ -58,6 +60,7 @@ export function ControlButton({
   accentColor = COLORS.accentPrimary,
   glowColor = COLORS.accentGlow,
   isActive = false,
+  disabled = false,
   style,
   iconStyle,
   circular = false,
@@ -112,20 +115,30 @@ export function ControlButton({
     ]).start();
   }, [isActive, scaleAnim, glowAnim]);
 
+  useEffect(() => {
+    Animated.timing(glowAnim, {
+      toValue: isActive ? 1 : 0,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+  }, [isActive, glowAnim]);
+
   // Stable callbacks that read from refs
   const handlePressIn = useCallback(() => {
+    if (disabled) return;
     setPressed(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     animateIn();
     onPressInRef.current?.();
-  }, [animateIn]);
+  }, [animateIn, disabled]);
 
   const handlePressOut = useCallback(() => {
+    if (disabled) return;
     setPressed(false);
     animateOut();
     onPressOutRef.current?.();
     onPressRef.current?.();
-  }, [animateOut]);
+  }, [animateOut, disabled]);
 
   // Register with MultiTouchArea
   useEffect(() => {
@@ -165,9 +178,10 @@ export function ControlButton({
         accessible
         accessibilityRole="button"
         accessibilityLabel={label ?? icon}
-        accessibilityHint={onPressIn ? 'Press and hold to control the car' : 'Double tap to activate'}
-        accessibilityState={{ selected: isActive, disabled: false }}
+        accessibilityHint={disabled ? 'Connect to the RC car to enable this control' : onPressIn ? 'Press and hold to control the car' : 'Double tap to activate'}
+        accessibilityState={{ selected: isActive, disabled }}
         onAccessibilityTap={() => {
+          if (disabled) return;
           handlePressIn();
           handlePressOut();
         }}
@@ -182,6 +196,7 @@ export function ControlButton({
           },
           isActive && { backgroundColor: `${accentColor}15` },
           pressed && { backgroundColor: `${accentColor}10` },
+          disabled && styles.buttonDisabled,
           style,
         ]}
       >
@@ -224,6 +239,7 @@ export function ControlButton({
 
 const SIZE_MAP = {
   small: { width: 56, height: 56, iconSize: 20 },
+  utility: { width: 64, height: 60, iconSize: 22 },
   medium: { width: 80, height: 80, iconSize: 32 },
   large: { width: 100, height: 100, iconSize: 40 },
 };
@@ -238,6 +254,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: COLORS.backgroundCard,
     overflow: 'hidden',
+  },
+  buttonDisabled: {
+    opacity: 0.35,
   },
   glowBorder: {
     borderWidth: 1.5,

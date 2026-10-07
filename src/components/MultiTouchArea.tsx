@@ -140,11 +140,12 @@ export function MultiTouchArea({ children, style }: MultiTouchAreaProps) {
       for (const [id, btn] of buttonsRef.current) {
         const l = btn.layout;
         if (!l) continue;
+        const hitSlop = 8;
         if (
-          pageX >= l.x &&
-          pageX <= l.x + l.width &&
-          pageY >= l.y &&
-          pageY <= l.y + l.height
+          pageX >= l.x - hitSlop &&
+          pageX <= l.x + l.width + hitSlop &&
+          pageY >= l.y - hitSlop &&
+          pageY <= l.y + l.height + hitSlop
         ) {
           return id;
         }
