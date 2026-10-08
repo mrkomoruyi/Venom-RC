@@ -31,7 +31,7 @@ Fully compatible with both **ESP32 Arduino Core 3.x+** and **2.x**.
          Headlight LED ←│ GPIO 4        │
          [Onboard LED]  │ GPIO 2        │
                         │               │
-             Battery   →│ VIN (5V reg)  │
+      Buck converter   →│ VIN (5V reg)  │
                     GND ─│ GND          │
                         └───────────────┘
 ```
