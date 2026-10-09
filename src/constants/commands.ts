@@ -2,11 +2,14 @@
  * Bluetooth command characters sent to ESP32 via Serial.
  *
  * Single directions:
- *   F = Forward, B = Backward, L = Left, R = Right, S = Stop
+ *   F = Forward, B = Backward, L = Steering left, R = Steering right, S = Stop
  *
  * Combined directions (simultaneous):
- *   G = Forward-Left, I = Forward-Right
- *   H = Backward-Left, J = Backward-Right
+ *   G = Forward + steer left, I = Forward + steer right
+ *   H = Backward + steer left, J = Backward + steer right
+ *
+ * The firmware drives both rear motors at the same full throttle. The left and
+ * right directions operate a dedicated DC steering motor.
  */
 
 export const COMMANDS = {

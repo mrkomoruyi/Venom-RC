@@ -19,10 +19,10 @@ to start the included ESP32 protocol simulator while developing the UI.
 
 | Input | Command |
 | --- | --- |
-| Forward / reverse / left / right | `F` / `B` / `L` / `R` |
+| Forward / reverse / steer left / steer right | `F` / `B` / `L` / `R` |
 | Stop | `S` |
-| Forward-left / forward-right | `G` / `I` |
-| Reverse-left / reverse-right | `H` / `J` |
+| Forward + steer left / forward + steer right | `G` / `I` |
+| Reverse + steer left / reverse + steer right | `H` / `J` |
 | Horn | `V` |
 | Lights on / off | `1` / `0` |
 
@@ -37,6 +37,15 @@ This covers a killed app, depleted battery, or lost Bluetooth radio link.
 The app does **not** auto-reconnect on launch. Instead it loads the last-used
 device name and shows a "Reconnect" button in the toolbar so the user is
 always in control.
+
+## Drivetrain configuration
+
+The supplied ESP32 firmware is configured for two rear drive motors and one DC
+steering motor. Both rear motors receive the same full-speed throttle command;
+there is no differential speed reduction or skid steering. The steering motor
+uses the unused B channel of L298N #1 (`IN3=GPIO 21`, `IN4=GPIO 22`,, not differential drive.
+`ENB=GPIO 23`). See the [firmware wiring guide](firmware/esp32_rc_car/README.md)
+before connecting the hardware.
 
 ## Development
 

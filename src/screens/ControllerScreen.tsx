@@ -12,8 +12,9 @@
  * │          │                             │                    │
  * └──────────┴─────────────────────────────┴────────────────────┘
  *
- * Supports simultaneous button presses (e.g. Forward + Left)
- * by tracking active directions and sending combined commands.
+ * Supports simultaneous throttle and steering presses (e.g. Forward + Left)
+ * by tracking active directions and sending combined commands. The car firmware
+ * applies equal full throttle to both rear motors and drives steering separately.
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
@@ -268,7 +269,7 @@ export function ControllerScreen() {
             accessibilityRole="text"
             accessibilityLabel={
               isConnected
-                ? 'Hold a direction to drive. Combine throttle and steering for precise movement.'
+                ? 'Hold throttle to drive. Hold left or right to run the steering motor. Combine them to turn while driving.'
                 : 'Connect to the RC car to enable driving controls.'
             }
           >
@@ -280,7 +281,7 @@ export function ControllerScreen() {
             </Text>
             <Text style={styles.instructionBody}>
               {isConnected
-                ? 'Use throttle and steering together for combined movement.'
+                ? 'Rear motors use equal full throttle. Hold steering to turn.'
                 : 'Choose a Bluetooth device from the CONNECT button above.'}
             </Text>
           </View>

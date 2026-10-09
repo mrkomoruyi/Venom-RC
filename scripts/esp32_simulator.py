@@ -8,7 +8,8 @@ This allows end-to-end testing of the React Native RC Car app without physical h
   - Phone scans and discovers this PC as "ESP32_CAR"
   - Phone connects via standard Bluetooth Serial Port Profile (SPP)
   - Controller button presses send real RFCOMM commands ('F', 'B', 'L', 'R', 'G', etc.)
-  - Live ASCII dashboard visualizes car motion, motors, lights, and commands in real time!
+  - Live ASCII dashboard visualizes full-power rear throttle, steering, lights,
+    and commands in real time!
 """
 
 import sys
@@ -77,14 +78,15 @@ SPP_SERVICE_RECORD = """
 
 # Command mapping identical to app's COMMANDS constant
 COMMAND_NAMES = {
-    'F': ('FORWARD', '▲ Forward', (100, 100)),
-    'B': ('BACKWARD', '▼ Reverse', (-100, -100)),
-    'L': ('LEFT', '◄ Turn Left (Spin)', (-100, 100)),
-    'R': ('RIGHT', 'Turn Right (Spin) ►', (100, -100)),
-    'G': ('FORWARD_LEFT', '▲◄ Forward + Left Curve', (40, 100)),
-    'I': ('FORWARD_RIGHT', '▲► Forward + Right Curve', (100, 40)),
-    'H': ('BACKWARD_LEFT', '▼◄ Reverse + Left Curve', (-40, -100)),
-    'J': ('BACKWARD_RIGHT', '▼► Reverse + Right Curve', (-100, -40)),
+    # (command name, dashboard label, (rear throttle, steering direction))
+    'F': ('FORWARD', '▲ Forward', (100, 0)),
+    'B': ('BACKWARD', '▼ Reverse', (-100, 0)),
+    'L': ('LEFT', '◄ Steer Left', (0, -100)),
+    'R': ('RIGHT', 'Steer Right ►', (0, 100)),
+    'G': ('FORWARD_LEFT', '▲◄ Forward + Steer Left', (100, -100)),
+    'I': ('FORWARD_RIGHT', '▲► Forward + Steer Right', (100, 100)),
+    'H': ('BACKWARD_LEFT', '▼◄ Reverse + Steer Left', (-100, -100)),
+    'J': ('BACKWARD_RIGHT', '▼► Reverse + Steer Right', (-100, 100)),
     'S': ('STOP', '■ Stopped', (0, 0)),
     '1': ('LIGHTS_ON', '💡 Headlights ON', None),
     '0': ('LIGHTS_OFF', '⚪ Headlights OFF', None),
@@ -98,8 +100,9 @@ class CarState:
         self.client_addr = "N/A"
         self.direction = "STOP"
         self.direction_label = "■ Stopped"
-        self.left_motor = 0    # -100 to +100
-        self.right_motor = 0   # -100 to +100
+        self.rear_left_motor = 0   # -100 to +100
+        self.rear_right_motor = 0  # -100 to +100
+        self.steering_motor = 0    # -100 (left) to +100 (right)
         self.lights = False
         self.horn = False
         self.horn_timestamp = 0
@@ -112,8 +115,9 @@ class CarState:
     def stop_motors(self, reason=None):
         self.direction = "STOP"
         self.direction_label = "■ Stopped"
-        self.left_motor = 0
-        self.right_motor = 0
+        self.rear_left_motor = 0
+        self.rear_right_motor = 0
+        self.steering_motor = 0
         if reason:
             now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             self.history.append((now, "S", reason))
@@ -125,7 +129,7 @@ class CarState:
         logger.info(f"Received command: '{char}'")
 
         if char in COMMAND_NAMES:
-            name, label, motors = COMMAND_NAMES[char]
+            name, label, controls = COMMAND_NAMES[char]
             if char in ('1', '0'):
                 self.lights = (char == '1')
                 self.history.append((now, char, f"Headlights -> {'ON' if self.lights else 'OFF'}"))
@@ -136,8 +140,11 @@ class CarState:
             else:
                 self.direction = name
                 self.direction_label = label
-                if motors:
-                    self.left_motor, self.right_motor = motors
+                if controls:
+                    rear_throttle, self.steering_motor = controls
+                    # Rear motors deliberately receive identical throttle.
+                    self.rear_left_motor = rear_throttle
+                    self.rear_right_motor = rear_throttle
                     self.last_motion_command_at = time.monotonic()
                 self.history.append((now, char, f"{name} ({label})"))
         elif char in ('\r', '\n', ' '):
@@ -266,8 +273,9 @@ def render_dashboard(state):
     out.append(f"\033[96m║\033[0m  {lft}   {rgt}          Headlights     : {lights_status}                 \033[96m║\033[0m\n")
     out.append(f"\033[96m║\033[0m      {bwd}              Horn           : {horn_status}                 \033[96m║\033[0m\n")
     out.append("\033[96m║\033[0m                                                                      \033[96m║\033[0m\n")
-    out.append(f"\033[96m║\033[0m  Left Motor  (Track A): {draw_motor_bar(state.left_motor)}                               \033[96m║\033[0m\n")
-    out.append(f"\033[96m║\033[0m  Right Motor (Track B): {draw_motor_bar(state.right_motor)}                               \033[96m║\033[0m\n")
+    out.append(f"\033[96m║\033[0m  Rear Left Motor : {draw_motor_bar(state.rear_left_motor)}                                  \033[96m║\033[0m\n")
+    out.append(f"\033[96m║\033[0m  Rear Right Motor: {draw_motor_bar(state.rear_right_motor)}                                  \033[96m║\033[0m\n")
+    out.append(f"\033[96m║\033[0m  Steering Motor  : {draw_motor_bar(state.steering_motor)}                                  \033[96m║\033[0m\n")
     out.append("\033[96m╠══════════════════════════════════════════════════════════════════════╣\033[0m\n")
     out.append(f"\033[96m║\033[0m  \033[1mRECEIVED COMMAND LOG\033[0m (Total: {state.total_commands:4d})                              \033[96m║\033[0m\n")
 

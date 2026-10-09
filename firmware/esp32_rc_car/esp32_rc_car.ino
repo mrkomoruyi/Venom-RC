@@ -3,15 +3,18 @@
  * ====================================================
  *
  * Receives single-character commands over Bluetooth Classic (SPP/RFCOMM) from
- * the "RC Command" React Native controller app and drives two TT geared motors
- * through individual L298N H-bridge drivers.
+ * the "RC Command" React Native controller app and drives two rear DC motors
+ * at the same full throttle plus a separate DC steering motor.  The rear
+ * motors are not used for differential or skid steering.
  *
  * Control Protocol (matches app's commands.ts):
- *   F = Forward           B = Backward
- *   L = Left (spin)       R = Right (spin)
- *   G = Forward-Left      I = Forward-Right
- *   H = Backward-Left     J = Backward-Right
- *   S = Stop
+ *   F = Rear motors forward, steering stopped
+ *   B = Rear motors reverse, steering stopped
+ *   L = Steer left, rear motors stopped
+ *   R = Steer right, rear motors stopped
+ *   G = Forward + steer left     I = Forward + steer right
+ *   H = Reverse + steer left     J = Reverse + steer right
+ *   S = Stop rear and steering motors
  *   V = Horn (momentary)
  *   1 = Headlights ON     0 = Headlights OFF
  *
@@ -24,12 +27,17 @@
  * Hardware — ESP32 DevKit V1 + 2× L298N + Buzzer + LEDs
  * ======================================================
  *
- * Motor Driver A (LEFT motor — L298N #1):
+ * Motor Driver A (LEFT REAR motor — L298N #1, channel A):
  *   IN1  → GPIO 27    (direction pin A)
  *   IN2  → GPIO 26    (direction pin B)
  *   ENA  → GPIO 14    (PWM speed)
  *
- * Motor Driver B (RIGHT motor — L298N #2):
+ * Motor Driver A (STEERING motor — L298N #1, channel B):
+ *   IN3  → GPIO 21    (direction pin A)
+ *   IN4  → GPIO 22    (direction pin B)
+ *   ENB  → GPIO 23    (PWM speed)
+ *
+ * Motor Driver B (RIGHT REAR motor — L298N #2, channel B):
  *   IN3  → GPIO 25    (direction pin A)
  *   IN4  → GPIO 33    (direction pin B)
  *   ENB  → GPIO 32    (PWM speed)
@@ -67,15 +75,20 @@
 //  Pin Assignments
 // ──────────────────────────────────────────────
 
-// Left motor (L298N #1)
-static const int LEFT_IN1  = 27;   // Direction pin A
-static const int LEFT_IN2  = 26;   // Direction pin B
-static const int LEFT_ENA  = 14;   // PWM speed control
+// Rear-left motor (L298N #1, channel A)
+static const int REAR_LEFT_IN1  = 27;   // Direction pin A
+static const int REAR_LEFT_IN2  = 26;   // Direction pin B
+static const int REAR_LEFT_ENA  = 14;   // PWM speed control
 
-// Right motor (L298N #2)
-static const int RIGHT_IN3 = 25;   // Direction pin A
-static const int RIGHT_IN4 = 33;   // Direction pin B
-static const int RIGHT_ENB = 32;   // PWM speed control
+// Steering motor (L298N #1, channel B)
+static const int STEERING_IN3 = 21;     // Direction pin A
+static const int STEERING_IN4 = 22;     // Direction pin B
+static const int STEERING_ENB = 23;     // PWM speed control
+
+// Rear-right motor (L298N #2, channel B)
+static const int REAR_RIGHT_IN3 = 25;   // Direction pin A
+static const int REAR_RIGHT_IN4 = 33;   // Direction pin B
+static const int REAR_RIGHT_ENB = 32;   // PWM speed control
 
 // Peripherals
 static const int BUZZER_PIN     = 13;
@@ -89,17 +102,19 @@ static const int PWM_FREQ       = 5000;  // 5 kHz — above audible motor whine
 static const int PWM_RESOLUTION = 8;     // 0–255 duty cycle
 
 // Legacy LEDC channels (only needed for Core 2.x)
-static const int LEFT_PWM_CHANNEL   = 0;
-static const int RIGHT_PWM_CHANNEL  = 1;
+static const int REAR_LEFT_PWM_CHANNEL = 0;
+static const int REAR_RIGHT_PWM_CHANNEL = 1;
 static const int BUZZER_PWM_CHANNEL = 2;
+static const int STEERING_PWM_CHANNEL = 3;
 
 // ──────────────────────────────────────────────
 //  Motor Speed Profiles
 // ──────────────────────────────────────────────
 // Values 0–255 (8-bit PWM)
-static const int SPEED_FULL  = 220;  // ~86% duty — leaves headroom & kinder to TT gearboxes
-static const int SPEED_CURVE = 100;  // ~39% duty — inner wheel during turn-while-driving
-static const int SPEED_SPIN  = 180;  // ~70% duty — spot spin turn (wheels in opposite direction)
+// Both rear motors always receive SPEED_FULL together; there is no differential.
+static const int SPEED_FULL = 255;
+// Tune to suit the steering gearbox/linkage. This does not affect rear throttle.
+static const int STEERING_SPEED = 180;
 
 // ──────────────────────────────────────────────
 //  Horn Configuration
@@ -159,50 +174,72 @@ void pwmToneSet(int pin, int channel, int freq) {
 // ──────────────────────────────────────────────
 
 /**
- * Set the left motor speed and direction.
- * @param speed  -255 to +255 (positive = forward, negative = reverse, 0 = brake)
+ * Set the rear-left motor speed and direction.
+ * @param speed  -255 to +255 (positive = forward, negative = reverse, 0 = stop)
  */
-void setLeftMotor(int speed) {
+void setRearLeftMotor(int speed) {
   if (speed > 0) {
-    digitalWrite(LEFT_IN1, HIGH);
-    digitalWrite(LEFT_IN2, LOW);
-    pwmWriteDuty(LEFT_ENA, LEFT_PWM_CHANNEL, constrain(speed, 0, 255));
+    digitalWrite(REAR_LEFT_IN1, HIGH);
+    digitalWrite(REAR_LEFT_IN2, LOW);
+    pwmWriteDuty(REAR_LEFT_ENA, REAR_LEFT_PWM_CHANNEL, constrain(speed, 0, 255));
   } else if (speed < 0) {
-    digitalWrite(LEFT_IN1, LOW);
-    digitalWrite(LEFT_IN2, HIGH);
-    pwmWriteDuty(LEFT_ENA, LEFT_PWM_CHANNEL, constrain(-speed, 0, 255));
+    digitalWrite(REAR_LEFT_IN1, LOW);
+    digitalWrite(REAR_LEFT_IN2, HIGH);
+    pwmWriteDuty(REAR_LEFT_ENA, REAR_LEFT_PWM_CHANNEL, constrain(-speed, 0, 255));
   } else {
-    // Active brake: both LOW + 0 PWM
-    digitalWrite(LEFT_IN1, LOW);
-    digitalWrite(LEFT_IN2, LOW);
-    pwmWriteDuty(LEFT_ENA, LEFT_PWM_CHANNEL, 0);
+    digitalWrite(REAR_LEFT_IN1, LOW);
+    digitalWrite(REAR_LEFT_IN2, LOW);
+    pwmWriteDuty(REAR_LEFT_ENA, REAR_LEFT_PWM_CHANNEL, 0);
   }
 }
 
 /**
- * Set the right motor speed and direction.
- * @param speed  -255 to +255 (positive = forward, negative = reverse, 0 = brake)
+ * Set the rear-right motor speed and direction.
+ * @param speed  -255 to +255 (positive = forward, negative = reverse, 0 = stop)
  */
-void setRightMotor(int speed) {
+void setRearRightMotor(int speed) {
   if (speed > 0) {
-    digitalWrite(RIGHT_IN3, HIGH);
-    digitalWrite(RIGHT_IN4, LOW);
-    pwmWriteDuty(RIGHT_ENB, RIGHT_PWM_CHANNEL, constrain(speed, 0, 255));
+    digitalWrite(REAR_RIGHT_IN3, HIGH);
+    digitalWrite(REAR_RIGHT_IN4, LOW);
+    pwmWriteDuty(REAR_RIGHT_ENB, REAR_RIGHT_PWM_CHANNEL, constrain(speed, 0, 255));
   } else if (speed < 0) {
-    digitalWrite(RIGHT_IN3, LOW);
-    digitalWrite(RIGHT_IN4, HIGH);
-    pwmWriteDuty(RIGHT_ENB, RIGHT_PWM_CHANNEL, constrain(-speed, 0, 255));
+    digitalWrite(REAR_RIGHT_IN3, LOW);
+    digitalWrite(REAR_RIGHT_IN4, HIGH);
+    pwmWriteDuty(REAR_RIGHT_ENB, REAR_RIGHT_PWM_CHANNEL, constrain(-speed, 0, 255));
   } else {
-    digitalWrite(RIGHT_IN3, LOW);
-    digitalWrite(RIGHT_IN4, LOW);
-    pwmWriteDuty(RIGHT_ENB, RIGHT_PWM_CHANNEL, 0);
+    digitalWrite(REAR_RIGHT_IN3, LOW);
+    digitalWrite(REAR_RIGHT_IN4, LOW);
+    pwmWriteDuty(REAR_RIGHT_ENB, REAR_RIGHT_PWM_CHANNEL, 0);
   }
 }
 
-/** Stop both motors immediately. */
+/** Set the steering motor direction, or stop it at the current wheel position. */
+void setSteeringMotor(int speed) {
+  if (speed > 0) {
+    digitalWrite(STEERING_IN3, HIGH);
+    digitalWrite(STEERING_IN4, LOW);
+    pwmWriteDuty(STEERING_ENB, STEERING_PWM_CHANNEL, constrain(speed, 0, 255));
+  } else if (speed < 0) {
+    digitalWrite(STEERING_IN3, LOW);
+    digitalWrite(STEERING_IN4, HIGH);
+    pwmWriteDuty(STEERING_ENB, STEERING_PWM_CHANNEL, constrain(-speed, 0, 255));
+  } else {
+    digitalWrite(STEERING_IN3, LOW);
+    digitalWrite(STEERING_IN4, LOW);
+    pwmWriteDuty(STEERING_ENB, STEERING_PWM_CHANNEL, 0);
+  }
+}
+
+/** Drive both rear motors identically; this is deliberately non-differential. */
+void setRearMotors(int speed) {
+  setRearLeftMotor(speed);
+  setRearRightMotor(speed);
+}
+
+/** Stop both rear motors and the steering motor immediately. */
 void stopMotors() {
-  setLeftMotor(0);
-  setRightMotor(0);
+  setRearMotors(0);
+  setSteeringMotor(0);
   motorsRunning = false;
 }
 
@@ -258,58 +295,58 @@ void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
 void processCommand(char cmd) {
   switch (cmd) {
     // ── Movement Commands ──────────────────
-    case 'F':  // Forward
-      setLeftMotor(SPEED_FULL);
-      setRightMotor(SPEED_FULL);
+    case 'F':  // Forward, wheels straight
+      setRearMotors(SPEED_FULL);
+      setSteeringMotor(0);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'B':  // Backward
-      setLeftMotor(-SPEED_FULL);
-      setRightMotor(-SPEED_FULL);
+    case 'B':  // Reverse, wheels straight
+      setRearMotors(-SPEED_FULL);
+      setSteeringMotor(0);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'L':  // Left — spin in place
-      setLeftMotor(-SPEED_SPIN);
-      setRightMotor(SPEED_SPIN);
+    case 'L':  // Steer left while stationary
+      setRearMotors(0);
+      setSteeringMotor(-STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'R':  // Right — spin in place
-      setLeftMotor(SPEED_SPIN);
-      setRightMotor(-SPEED_SPIN);
+    case 'R':  // Steer right while stationary
+      setRearMotors(0);
+      setSteeringMotor(STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'G':  // Forward-Left (curve)
-      setLeftMotor(SPEED_CURVE);
-      setRightMotor(SPEED_FULL);
+    case 'G':  // Forward + steer left
+      setRearMotors(SPEED_FULL);
+      setSteeringMotor(-STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'I':  // Forward-Right (curve)
-      setLeftMotor(SPEED_FULL);
-      setRightMotor(SPEED_CURVE);
+    case 'I':  // Forward + steer right
+      setRearMotors(SPEED_FULL);
+      setSteeringMotor(STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'H':  // Backward-Left (curve)
-      setLeftMotor(-SPEED_CURVE);
-      setRightMotor(-SPEED_FULL);
+    case 'H':  // Reverse + steer left
+      setRearMotors(-SPEED_FULL);
+      setSteeringMotor(-STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
 
-    case 'J':  // Backward-Right (curve)
-      setLeftMotor(-SPEED_FULL);
-      setRightMotor(-SPEED_CURVE);
+    case 'J':  // Reverse + steer right
+      setRearMotors(-SPEED_FULL);
+      setSteeringMotor(STEERING_SPEED);
       motorsRunning = true;
       lastMotionCommandMs = millis();
       break;
@@ -369,36 +406,47 @@ void setup() {
   Serial.println("=================================");
 
   // ── Configure motor direction pins ────────
-  pinMode(LEFT_IN1, OUTPUT);
-  pinMode(LEFT_IN2, OUTPUT);
-  pinMode(RIGHT_IN3, OUTPUT);
-  pinMode(RIGHT_IN4, OUTPUT);
+  pinMode(REAR_LEFT_IN1, OUTPUT);
+  pinMode(REAR_LEFT_IN2, OUTPUT);
+  pinMode(STEERING_IN3, OUTPUT);
+  pinMode(STEERING_IN4, OUTPUT);
+  pinMode(REAR_RIGHT_IN3, OUTPUT);
+  pinMode(REAR_RIGHT_IN4, OUTPUT);
 
-  digitalWrite(LEFT_IN1, LOW);
-  digitalWrite(LEFT_IN2, LOW);
-  digitalWrite(RIGHT_IN3, LOW);
-  digitalWrite(RIGHT_IN4, LOW);
+  digitalWrite(REAR_LEFT_IN1, LOW);
+  digitalWrite(REAR_LEFT_IN2, LOW);
+  digitalWrite(STEERING_IN3, LOW);
+  digitalWrite(STEERING_IN4, LOW);
+  digitalWrite(REAR_RIGHT_IN3, LOW);
+  digitalWrite(REAR_RIGHT_IN4, LOW);
 
   // ── Configure PWM (LEDC) ──────────────────
 #if USE_LEDC_V3
   // Core 3.x+ API: directly bind frequency and resolution to pins
-  ledcAttach(LEFT_ENA, PWM_FREQ, PWM_RESOLUTION);
-  ledcWrite(LEFT_ENA, 0);
+  ledcAttach(REAR_LEFT_ENA, PWM_FREQ, PWM_RESOLUTION);
+  ledcWrite(REAR_LEFT_ENA, 0);
 
-  ledcAttach(RIGHT_ENB, PWM_FREQ, PWM_RESOLUTION);
-  ledcWrite(RIGHT_ENB, 0);
+  ledcAttach(REAR_RIGHT_ENB, PWM_FREQ, PWM_RESOLUTION);
+  ledcWrite(REAR_RIGHT_ENB, 0);
+
+  ledcAttach(STEERING_ENB, PWM_FREQ, PWM_RESOLUTION);
+  ledcWrite(STEERING_ENB, 0);
 
   ledcAttach(BUZZER_PIN, HORN_FREQ, PWM_RESOLUTION);
   ledcWrite(BUZZER_PIN, 0);
 #else
   // Core 2.x API: setup channel then attach to pin
-  ledcSetup(LEFT_PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(LEFT_ENA, LEFT_PWM_CHANNEL);
-  ledcWrite(LEFT_PWM_CHANNEL, 0);
+  ledcSetup(REAR_LEFT_PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(REAR_LEFT_ENA, REAR_LEFT_PWM_CHANNEL);
+  ledcWrite(REAR_LEFT_PWM_CHANNEL, 0);
 
-  ledcSetup(RIGHT_PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(RIGHT_ENB, RIGHT_PWM_CHANNEL);
-  ledcWrite(RIGHT_PWM_CHANNEL, 0);
+  ledcSetup(REAR_RIGHT_PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(REAR_RIGHT_ENB, REAR_RIGHT_PWM_CHANNEL);
+  ledcWrite(REAR_RIGHT_PWM_CHANNEL, 0);
+
+  ledcSetup(STEERING_PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(STEERING_ENB, STEERING_PWM_CHANNEL);
+  ledcWrite(STEERING_PWM_CHANNEL, 0);
 
   ledcSetup(BUZZER_PWM_CHANNEL, HORN_FREQ, PWM_RESOLUTION);
   ledcAttachPin(BUZZER_PIN, BUZZER_PWM_CHANNEL);
@@ -429,8 +477,9 @@ void setup() {
   Serial.println("[BT] Waiting for connection...");
   Serial.println();
   Serial.println("Pin Map:");
-  Serial.println("  Left  Motor: IN1=27, IN2=26, ENA=14");
-  Serial.println("  Right Motor: IN3=25, IN4=33, ENB=32");
+  Serial.println("  Left rear: IN1=27, IN2=26, ENA=14 (L298N #1A)");
+  Serial.println("  Steering: IN3=21, IN4=22, ENB=23 (L298N #1B)");
+  Serial.println("  Right rear: IN3=25, IN4=33, ENB=32 (L298N #2B)");
   Serial.println("  Buzzer: 13  |  Headlights: 4  |  Status LED: 2");
   Serial.println();
 
